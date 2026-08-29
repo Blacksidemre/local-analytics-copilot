@@ -6,6 +6,11 @@ Amaç: hassas dosyaları varsayılan olarak bilgisayarınızda tutarken doğal d
 
 > LLM planlar ve açıklar. Sayısal hesapları, dosya işlemlerini ve SQL'i deterministik Python/SQL araçları yapar.
 
+> **Hibrit geliştirme dalı:** `hermetic-hybrid-integration`, Hermetic'in UI/Tauri/artifact
+> katmanını LAC'ın deterministik analitik çekirdeğine bağlayan kontrollü geliştirme hattıdır.
+> `main` bu çalışma sırasında değiştirilmez. Mimari kararlar:
+> [`docs/HYBRID_ARCHITECTURE.md`](docs/HYBRID_ARCHITECTURE.md).
+
 > **Yayın durumu:** Bu sürüm bir release candidate'tır. Linux/Python 3.12 üzerinde lint, paketleme,
 > güvenlik ve deterministik analiz testleri doğrulanmıştır. Windows 11 + RTX 5070 Ti, gerçek Ollama
 > modelleri, Excel COM, canlı veritabanları ve OpenClaw entegrasyonu hedef bilgisayarda ayrıca
@@ -18,10 +23,13 @@ ile başlayın. Kısa yol:
 
 1. Python 3.12 ve Ollama'yı kurun.
 2. Repoyu ZIP olarak indirin ve klasöre çıkarın.
-3. Klasörde PowerShell açıp `Set-ExecutionPolicy -Scope Process Bypass` çalıştırın.
-4. `.\scripts\install_windows.ps1` çalıştırın; `qwen3.5:9b` sorusuna `E`, ağır model
-   sorusuna ilk kurulumda `H` deyin.
-5. `.\scripts\start_windows.ps1` çalıştırıp `http://127.0.0.1:8765` adresini açın.
+3. İlk kurulum için `.\scripts\install_windows.ps1` çalıştırın; `qwen3.5:9b` sorusuna `E`,
+   ağır model sorusuna ilk kurulumda `H` deyin.
+4. Sonraki açılışlarda `Start_Local_Analytics_Copilot.cmd` dosyasına çift tıklayın. Launcher
+   Ollama, Docker ve backend durumunu kontrol eder, gerekiyorsa servisi başlatır ve tarayıcıyı açar.
+
+`python` Windows aliası çalışmıyorsa kurucu otomatik olarak `py -3.12`, `py -3.13` ve
+`py -3.11` seçeneklerini dener.
 
 ## Zorunlu ücret var mı?
 **Hayır.** Varsayılan kurulum Ollama + yerel açık modeller + Python kütüphaneleridir. Ücretli OpenAI/Anthropic API anahtarı gerekmez. İnternet araştırması opsiyoneldir ve varsayılan olarak kapalıdır.
@@ -53,7 +61,9 @@ Gerçek hız ve tool-calling güvenilirliğini kendi bilgisayarınızda `lac ben
 - Düz anlatım -> sonuç -> iş anlamı -> isteğe bağlı teknik detay
 
 ### Data Quality / ETL
-- CSV/XLSX/XLSM/Parquet inceleme
+- Deterministik CSV encoding/delimiter/decimal/quote algılama
+- XLSX/XLSM sheet discovery ve header detection
+- CSV/XLSX/XLSM/Parquet inceleme; bozuk dosyada kullanıcı dostu ve görünür hata
 - Eksik veri, duplicate, constant kolon, schema drift
 - IQR + robust Z outlier flag
 - Açık data-quality kuralları
@@ -181,7 +191,7 @@ lac benchmark-models
 ## 4. Başlat
 
 ```powershell
-.\scripts\start_windows.ps1
+.\Start_Local_Analytics_Copilot.cmd
 ```
 
 Tarayıcı:
@@ -214,6 +224,14 @@ workspace/
 python scripts/generate_demo_data.py
 lac review incoming/demo_npl.csv --dashboard
 ```
+
+Data Bridge regression verisini üretmek için:
+
+```powershell
+python scripts/generate_credit_risk_regression.py
+```
+
+Beklenen profil: `1508` satır, `22` sütun, `52` eksik hücre ve `8` exact duplicate kopya.
 
 AI'ya örnek:
 
@@ -329,8 +347,8 @@ lac acceptance
 lac project-review --mode deep
 ```
 
-Mevcut RC kapısı: **35 test, %61,8 kaynak kapsamı, sıfır Ruff ihlali**. Donanım/model acceptance
-testleri Ollama çalıştığı hedef makinede ayrıca yürütülür.
+`hermetic-hybrid-integration` kapısı: **49 test, %66,29 kaynak kapsamı, sıfır Ruff ihlali**.
+Donanım/model acceptance testleri Ollama çalıştığı hedef makinede ayrıca yürütülür.
 
 `project-review` mimari/risk dokümanlarını **yerel deep model** ile eleştirel olarak inceler; cloud API kullanmaz.
 

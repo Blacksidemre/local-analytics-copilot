@@ -4,7 +4,8 @@ import hmac
 import uuid
 from typing import Literal
 
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, JSONResponse
 from pydantic import BaseModel, Field
 
@@ -13,16 +14,27 @@ from lacopilot.actions import ActionStore
 from lacopilot.audit import audit
 from lacopilot.config import get_settings
 from lacopilot.conversations import ConversationStore
+from lacopilot.dataset_uploads import save_uploaded_dataset
 from lacopilot.hardware import detect_hardware
+from lacopilot.ingestion import SUPPORTED_TABLE_EXTENSIONS, IngestionError, source_manifest
 from lacopilot.knowledge import KnowledgeBase
 from lacopilot.llm import OllamaAgent
 from lacopilot.memory import LocalMemory
 from lacopilot.personality import load_profiles, save_custom_profile
 from lacopilot.privacy import privacy_status
+from lacopilot.quick_analysis import interpret_profile
+from lacopilot.security import resolve_workspace_path, validate_ollama_endpoint
 from lacopilot.tools import TOOL_MAP
 from lacopilot.tools.data_tools import profile_dataset
 
 app = FastAPI(title="Local Analytics Copilot", version=__version__)
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=get_settings().parsed_bridge_origins(),
+    allow_credentials=False,
+    allow_methods=["GET", "POST", "DELETE", "OPTIONS"],
+    allow_headers=["Authorization", "Content-Type", "X-LAC-Token"],
+)
 
 
 @app.middleware("http")
@@ -62,6 +74,18 @@ class AnalyzeRequest(BaseModel):
     sheet_name: str = Field(default="0", max_length=200)
 
 
+class DatasetProfileRequest(BaseModel):
+    file_path: str = Field(min_length=1, max_length=1000)
+    sheet_name: str = Field(default="0", max_length=200)
+
+
+class QuickAnalysisRequest(DatasetProfileRequest):
+    question: str = Field(default="", max_length=20_000)
+    interpret: bool = True
+    language: str = Field(default="tr", max_length=16)
+    model: str | None = Field(default=None, max_length=200)
+
+
 class KnowledgeIngestRequest(BaseModel):
     file_path: str = Field(min_length=1, max_length=1000)
     embed_model: str | None = Field(default=None, max_length=200)
@@ -96,7 +120,45 @@ def _store() -> ConversationStore:
 
 @app.get("/health")
 def health():
-    return {"status": "ok", "version": __version__}
+    return {
+        "status": "ok",
+        "service": "local-analytics-copilot",
+        "version": __version__,
+        "data_bridge": {"status": "ready", "api_version": 1},
+    }
+
+
+@app.get("/api/v1/health")
+def bridge_health():
+    import json
+    import urllib.request
+
+    settings = get_settings()
+    ollama = {"status": "unavailable", "models": []}
+    try:
+        host = validate_ollama_endpoint(
+            settings.ollama_host,
+            allow_remote=settings.allow_remote_ollama,
+        )
+        with urllib.request.urlopen(host + "/api/tags", timeout=2) as r:
+            payload = json.load(r)
+        ollama = {
+            "status": "ready",
+            "models": [item.get("name") or item.get("model") for item in payload.get("models", [])],
+        }
+    except Exception as exc:
+        ollama["reason"] = str(exc)[:300]
+    return {
+        "status": "ready" if ollama["status"] == "ready" else "degraded",
+        "version": __version__,
+        "bridge_api_version": 1,
+        "data_bridge": {
+            "status": "ready",
+            "parser": "lac-deterministic-data-bridge",
+            "supported_extensions": sorted(SUPPORTED_TABLE_EXTENSIONS),
+        },
+        "ollama": ollama,
+    }
 
 
 @app.get("/api/hardware")
@@ -185,6 +247,94 @@ def analyze(req: AnalyzeRequest):
         return profile_dataset(req.file_path, req.sheet_name)
     except Exception as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+def _profile_or_http_error(file_path: str, sheet_name: str) -> dict:
+    try:
+        return profile_dataset(file_path, sheet_name)
+    except IngestionError as exc:
+        raise HTTPException(status_code=422, detail=exc.as_dict()) from exc
+    except (FileNotFoundError, PermissionError, ValueError) as exc:
+        raise HTTPException(
+            status_code=400,
+            detail={"code": "invalid_dataset", "message": str(exc)},
+        ) from exc
+
+
+@app.post("/api/v1/datasets/profile")
+def dataset_profile(req: DatasetProfileRequest):
+    profile = _profile_or_http_error(req.file_path, req.sheet_name)
+    return {"status": "profiled", "file_path": req.file_path, "profile": profile}
+
+
+@app.post("/api/v1/datasets/upload", status_code=201)
+async def dataset_upload(
+    file: UploadFile = File(...),
+    sheet_name: str | None = Form(default=None),
+    run_profile: bool = Form(default=True),
+    interpret: bool = Form(default=False),
+    question: str = Form(default=""),
+):
+    try:
+        destination, manifest = await save_uploaded_dataset(file)
+    except IngestionError as exc:
+        raise HTTPException(status_code=422, detail=exc.as_dict()) from exc
+    settings = get_settings()
+    relative = str(destination.resolve().relative_to(settings.workspace.resolve()))
+    response = {
+        "status": "uploaded",
+        "file_path": relative,
+        "manifest": manifest,
+    }
+    if manifest["format"] in {"xlsx", "xlsm"} and sheet_name is None:
+        nonempty_sheets = [sheet for sheet in manifest["sheets"] if not sheet["empty"]]
+        if len(nonempty_sheets) > 1:
+            response["status"] = "sheet_selection_required"
+            response["sheet_options"] = nonempty_sheets
+            return response
+        if nonempty_sheets:
+            sheet_name = nonempty_sheets[0]["name"]
+    selected_sheet = sheet_name or "0"
+    if run_profile:
+        profile = _profile_or_http_error(relative, selected_sheet)
+        response["status"] = "profiled"
+        response["selected_sheet"] = selected_sheet
+        response["profile"] = profile
+        if interpret:
+            response["interpretation"] = interpret_profile(profile, question=question)
+    return response
+
+
+@app.get("/api/v1/datasets/manifest")
+def dataset_manifest(file_path: str):
+    settings = get_settings()
+    try:
+        path = resolve_workspace_path(settings.workspace, file_path)
+        return source_manifest(path)
+    except IngestionError as exc:
+        raise HTTPException(status_code=422, detail=exc.as_dict()) from exc
+    except (FileNotFoundError, PermissionError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/api/v1/analysis/quick")
+def quick_analysis(req: QuickAnalysisRequest):
+    profile = _profile_or_http_error(req.file_path, req.sheet_name)
+    result = {
+        "status": "completed",
+        "mode": "quick",
+        "file_path": req.file_path,
+        "profile": profile,
+        "interpretation": {"status": "skipped"},
+    }
+    if req.interpret:
+        result["interpretation"] = interpret_profile(
+            profile,
+            question=req.question,
+            language=req.language,
+            model=req.model,
+        )
+    return result
 
 
 @app.post("/api/chat")

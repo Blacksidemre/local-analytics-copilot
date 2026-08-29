@@ -69,7 +69,12 @@ def test_api_token_action_approval_and_security_headers(tmp_path, monkeypatch):
         ).status_code
         == 409
     )
-    assert client.get("/health").json() == {"status": "ok", "version": "1.0.0rc1"}
+    assert client.get("/health").json() == {
+        "status": "ok",
+        "service": "local-analytics-copilot",
+        "version": "1.0.0rc1",
+        "data_bridge": {"status": "ready", "api_version": 1},
+    }
 
 
 def test_agent_queues_write_tool_without_executing(tmp_path, monkeypatch):

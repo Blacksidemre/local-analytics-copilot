@@ -97,10 +97,13 @@ Kurulum ekranında:
 
 ```powershell
 python --version
+py -3.12 --version
 ```
 
-`Python 3.11`, `3.12` veya `3.13` görmelisiniz. En sorunsuz başlangıç önerisi Python 3.12'dir.
-Python 3.14 bu RC1 tarafından henüz desteklenmez.
+Komutlardan yalnızca birinin çalışması yeterlidir. `python` Microsoft Store aliası nedeniyle hata verse
+bile `py -3.12` çalışıyorsa kurulum script'i Python'ı otomatik bulur. `Python 3.11`, `3.12` veya
+`3.13` desteklenir; en sorunsuz başlangıç önerisi Python 3.12'dir. Python 3.14 bu RC1 tarafından
+henüz desteklenmez.
 
 ## 3. Ollama kurun
 
@@ -126,6 +129,13 @@ Git kullanıyorsanız alternatif:
 
 ```powershell
 git clone https://github.com/Blacksidemre/local-analytics-copilot.git
+cd local-analytics-copilot
+```
+
+Hibrit geliştirme dalını test edecekseniz:
+
+```powershell
+git clone -b hermetic-hybrid-integration https://github.com/Blacksidemre/local-analytics-copilot.git
 cd local-analytics-copilot
 ```
 
@@ -217,17 +227,15 @@ deterministik ilk analizi çalıştırır. Çıktılar `workspace/outputs` klas�
 
 ## 9. Tarayıcı arayüzünü başlatın
 
-```powershell
-.\scripts\start_windows.ps1
-```
+Proje klasöründeki `Start_Local_Analytics_Copilot.cmd` dosyasına çift tıklayın.
 
-Ardından tarayıcıda açın:
+Launcher Ollama, Docker ve backend durumunu kontrol eder, gerekirse yerel servisleri başlatır ve
+tarayıcıyı otomatik açar:
 
 - Ana ekran: <http://127.0.0.1:8765>
 - Ayarlar ve onay kuyruğu: <http://127.0.0.1:8765/admin>
 
-PowerShell penceresi açık kaldığı sürece uygulama çalışır. Durdurmak için PowerShell'de `Ctrl+C`
-kullanın.
+İsterseniz eski terminal yöntemi de çalışır: `.\scripts\start_windows.ps1`.
 
 ---
 
@@ -235,17 +243,12 @@ kullanın.
 
 ## 1. Her açılışta
 
-1. Ollama'nın çalıştığından emin olun.
-2. Proje klasöründe PowerShell açın.
-3. Şunu çalıştırın:
+1. Proje klasörünü açın.
+2. `Start_Local_Analytics_Copilot.cmd` dosyasına çift tıklayın.
+3. Açılan <http://127.0.0.1:8765> sayfasını kullanın.
 
-```powershell
-.\scripts\start_windows.ps1
-```
-
-4. <http://127.0.0.1:8765> adresini açın.
-
-Kurulum script'ini her gün yeniden çalıştırmanız gerekmez.
+PowerShell, `pnpm` veya environment komutu yazmanız gerekmez. Kurulum script'ini her gün yeniden
+çalıştırmanız da gerekmez.
 
 ## 2. Analiz edilecek dosyayı koyun
 
@@ -556,7 +559,7 @@ Gerçek kullanıma geçmeden önce hepsinin doğru olduğundan emin olun:
 - [ ] `ollama list` içinde `qwen3.5:9b` var.
 - [ ] `lac doctor` Ollama'ya ulaşıyor.
 - [ ] `lac privacy-check` web, remote ve cloud için güvenli durumu gösteriyor.
-- [ ] 35 otomatik test kurulurken geçti.
+- [ ] 49 otomatik test kurulurken geçti.
 - [ ] Sentetik demo analizi ve dashboard üretimi çalıştı.
 - [ ] Tarayıcı arayüzü yalnızca `127.0.0.1` üzerinden açılıyor.
 - [ ] Gerçek veri kullanımı için kurum/bilgi güvenliği onayı var.

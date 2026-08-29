@@ -32,11 +32,17 @@ class Settings(BaseSettings):
     allow_remote_ollama: bool = False
     allow_cloud_models: bool = False
     allow_network_bind: bool = False
+    bridge_origins: str = (
+        "http://127.0.0.1:3000,http://localhost:3000,"
+        "tauri://localhost,http://tauri.localhost,https://tauri.localhost"
+    )
     require_approval_for_writes: bool = True
     require_approval_for_external: bool = True
     api_token: str = ""
     sql_read_only: bool = True
     max_file_mb: int = Field(default=500, ge=1, le=10000)
+    max_excel_uncompressed_mb: int = Field(default=1024, ge=10, le=10000)
+    max_excel_archive_entries: int = Field(default=20_000, ge=100, le=100_000)
     max_query_rows: int = Field(default=5000, ge=1, le=50000)
 
     @property
@@ -96,6 +102,14 @@ class Settings(BaseSettings):
         if selected != "main":
             raise ValueError("model mode fast/main/deep olmalı")
         return self.model
+
+    def parsed_bridge_origins(self) -> list[str]:
+        origins = [origin.strip() for origin in self.bridge_origins.split(",") if origin.strip()]
+        if "*" in origins:
+            raise ValueError(
+                "LAC_BRIDGE_ORIGINS wildcard (*) kabul etmez; izinli origin'leri açıkça yazın"
+            )
+        return origins
 
     def ensure_dirs(self) -> None:
         for path in [

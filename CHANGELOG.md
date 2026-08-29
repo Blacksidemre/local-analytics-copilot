@@ -1,5 +1,18 @@
 # Changelog
 
+## Unreleased — Hermetic Hybrid Milestone 1
+- Frozen the Hermetic UI/Tauri ↔ LAC deterministic API integration boundary
+- Added robust CSV encoding, delimiter, quote, decimal and thousands-separator detection
+- Added XLSX/XLSM workbook sheet discovery, deterministic header-row detection and archive guards
+- Added visible typed ingestion errors instead of silent malformed-file acceptance
+- Added chunked local upload, file-signature validation and multi-sheet selection responses
+- Added expanded deterministic profiles with schema, unique counts, date ranges and finding IDs
+- Added bounded raw-row-free local Ollama Quick interpretation with citation-presence verification
+- Added a Hermetic TypeScript bridge client contract
+- Added a Windows double-click launcher with Python alias, Ollama, Docker and backend checks
+- Added 1,508 x 22 CSV/XLSX credit-risk regression fixtures and acceptance tests
+- Expanded automated suite to 49 tests and 66.29% coverage
+
 ## 1.0.0rc1
 - Ollama local agent with Fast/Main/Deep model modes
 - Persistent local conversations

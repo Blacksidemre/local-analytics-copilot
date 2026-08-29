@@ -8,6 +8,7 @@ import pandas as pd
 
 from lacopilot.audit import audit
 from lacopilot.config import get_settings
+from lacopilot.ingestion import read_table
 from lacopilot.security import resolve_workspace_path
 from lacopilot.tools.common import (
     infer_column_roles,
@@ -60,7 +61,8 @@ def inspect_dataset(file_path: str, sheet_name: str = "0", sample_rows: int = 5)
     path = resolve_workspace_path(s.workspace, file_path)
     if not path.exists():
         raise FileNotFoundError(path)
-    df = load_table(path, _sheet_arg(sheet_name))
+    loaded = read_table(path, _sheet_arg(sheet_name))
+    df = loaded.dataframe
     roles = infer_column_roles(df)
     result = {
         "file": str(path.resolve().relative_to(s.workspace.resolve())),
@@ -70,6 +72,7 @@ def inspect_dataset(file_path: str, sheet_name: str = "0", sample_rows: int = 5)
         "dtypes": {str(k): str(v) for k, v in df.dtypes.items()},
         "roles": roles,
         "memory_mb": round(float(df.memory_usage(deep=True).sum()) / 1024**2, 2),
+        "ingestion": loaded.metadata,
         "sample": [
             {str(k): serializable(v) for k, v in row.items()}
             for row in df.head(max(0, min(sample_rows, 20))).to_dict(orient="records")
@@ -102,12 +105,16 @@ def profile_dataset(file_path: str, sheet_name: str = "0") -> dict:
     """Create a descriptive and data-quality profile; never deletes or mutates source data."""
     s = get_settings()
     path = resolve_workspace_path(s.workspace, file_path)
-    df = load_table(path, _sheet_arg(sheet_name))
-    n = max(len(df), 1)
-    m = max(df.shape[1], 1)
+    loaded = read_table(path, _sheet_arg(sheet_name))
+    df = loaded.dataframe
+    rows = int(len(df))
+    columns = int(df.shape[1])
+    row_denominator = max(rows, 1)
+    column_denominator = max(columns, 1)
     missing = df.isna().sum().sort_values(ascending=False)
     missing_pct = (df.isna().mean() * 100).round(2).sort_values(ascending=False)
     duplicate_rows = int(df.duplicated().sum())
+    duplicate_group_rows = int(df.duplicated(keep=False).sum())
     roles = infer_column_roles(df)
     numeric_summary = {}
     outliers = {}
@@ -130,20 +137,114 @@ def profile_dataset(file_path: str, sheet_name: str = "0") -> dict:
     for col in roles["categorical"][:100]:
         vc = df[col].astype("string").value_counts(dropna=False).head(10)
         categorical_summary[col] = {str(k): int(v) for k, v in vc.items()}
-    total_cells = n * m
-    missing_rate = float(df.isna().sum().sum()) / total_cells
-    duplicate_rate = duplicate_rows / n
+    date_ranges = {}
+    for col in roles["datetime"][:100]:
+        parsed = pd.to_datetime(df[col], errors="coerce", format="mixed", dayfirst=True)
+        valid = parsed.dropna()
+        if len(valid):
+            date_ranges[col] = {
+                "count": int(len(valid)),
+                "min": serializable(valid.min()),
+                "max": serializable(valid.max()),
+                "unparsed_non_null": int((df[col].notna() & parsed.isna()).sum()),
+            }
+    total_cells = rows * columns
+    quality_denominator = max(total_cells, 1)
+    total_missing = int(df.isna().sum().sum())
+    missing_rate = float(total_missing) / quality_denominator
+    duplicate_rate = duplicate_rows / row_denominator
     constant = [str(c) for c in df.columns if df[c].nunique(dropna=False) <= 1]
     quality_score = 100.0
     quality_score -= min(35, missing_rate * 100 * 0.8)
     quality_score -= min(20, duplicate_rate * 100)
-    quality_score -= min(15, len(constant) / m * 100 * 0.5)
+    quality_score -= min(15, len(constant) / column_denominator * 100 * 0.5)
     quality_score = max(0.0, quality_score)
+    role_by_column = {column: role for role, columns in roles.items() for column in columns}
+    schema = [
+        {
+            "name": str(column),
+            "dtype": str(df[column].dtype),
+            "role": role_by_column.get(str(column), "unknown"),
+            "missing": int(df[column].isna().sum()),
+            "unique": int(df[column].nunique(dropna=True)),
+        }
+        for column in df.columns
+    ]
+    findings = [
+        {
+            "finding_id": "profile.shape.rows",
+            "kind": "metric",
+            "label": "Satır sayısı",
+            "value": rows,
+            "unit": "rows",
+            "source": "deterministic_dataframe_shape",
+        },
+        {
+            "finding_id": "profile.shape.columns",
+            "kind": "metric",
+            "label": "Sütun sayısı",
+            "value": columns,
+            "unit": "columns",
+            "source": "deterministic_dataframe_shape",
+        },
+        {
+            "finding_id": "profile.quality.missing_cells",
+            "kind": "metric",
+            "label": "Eksik hücre",
+            "value": total_missing,
+            "unit": "cells",
+            "source": "dataframe_isna_sum",
+        },
+        {
+            "finding_id": "profile.quality.exact_duplicate_copies",
+            "kind": "metric",
+            "label": "Tam duplicate kopya",
+            "value": duplicate_rows,
+            "unit": "rows",
+            "source": "dataframe_duplicated_keep_first",
+        },
+        {
+            "finding_id": "profile.quality.duplicate_group_rows",
+            "kind": "metric",
+            "label": "Orijinaller dahil duplicate grup satırı",
+            "value": duplicate_group_rows,
+            "unit": "rows",
+            "source": "dataframe_duplicated_keep_false",
+        },
+        {
+            "finding_id": "profile.quality.score_heuristic",
+            "kind": "metric",
+            "label": "Veri kalitesi tarama skoru",
+            "value": round(quality_score, 2),
+            "unit": "score_0_100",
+            "source": "documented_screening_heuristic",
+            "warning": "Bu değer denetim görüşü veya şirket benchmarkı değildir.",
+        },
+    ]
+    findings.extend(
+        {
+            "finding_id": f"profile.quality.missing.column.{index}",
+            "kind": "metric",
+            "label": f"{column} eksik değer",
+            "value": int(missing[column]),
+            "unit": "cells",
+            "source": "dataframe_isna_sum",
+            "dimension": {"column": str(column)},
+        }
+        for index, column in enumerate(df.columns)
+        if int(missing[column]) > 0
+    )
     result = {
-        "rows": int(len(df)),
-        "columns": int(df.shape[1]),
+        "profile_version": 2,
+        "rows": rows,
+        "columns": columns,
+        "total_cells": int(total_cells),
+        "total_missing_cells": total_missing,
         "roles": roles,
+        "schema": schema,
+        "unique_counts": {str(c): int(df[c].nunique(dropna=True)) for c in df.columns},
         "duplicate_rows": duplicate_rows,
+        "duplicate_rows_including_originals": duplicate_group_rows,
         "duplicate_pct": round(duplicate_rate * 100, 3),
         "quality_score_heuristic": round(quality_score, 2),
         "missing_count": {str(k): int(v) for k, v in missing.items()},
@@ -152,7 +253,10 @@ def profile_dataset(file_path: str, sheet_name: str = "0") -> dict:
         "high_missing_columns": [str(c) for c, p in missing_pct.items() if p >= 20],
         "numeric_summary": numeric_summary,
         "categorical_top_values": categorical_summary,
+        "date_ranges": date_ranges,
         "outlier_flags": outliers,
+        "ingestion": loaded.metadata,
+        "findings": findings,
         "notes": [
             "Quality score is a screening heuristic, not an audit opinion.",
             "Outliers are flagged for review; they are not automatically removed.",
