@@ -1,0 +1,46 @@
+tasks:
+  - id: profile_new_excel
+    prompt: "incoming/sample.xlsx dosyasını tanı, veri kalitesini değerlendir ve hangi analizlerin uygun olduğunu söyle."
+    expected_tools: [dataset_review]
+  - id: pivot
+    prompt: "incoming/sample.xlsx için portfolio bazında balance toplamını Pivot olarak Excel'e çıkar."
+    expected_tools: [bi_engine]
+  - id: dashboard
+    prompt: "incoming/sample.xlsx verisinden yönetici Excel dashboardu üret."
+    expected_tools: [bi_engine]
+  - id: two_groups
+    prompt: "incoming/sample.xlsx içinde A ve B gruplarının collection performansı anlamlı farklı mı?"
+    expected_tools: [analytics_engine]
+  - id: regression
+    prompt: "balance ve dpd'nin collection ile ilişkisini regresyon ile incele; nedensellik iddiasında bulunma."
+    expected_tools: [analytics_engine]
+  - id: anomaly
+    prompt: "incoming/sample.xlsx içinde sayısal anomalileri incele ve inceleme adaylarını çıkar."
+    expected_tools: [analytics_engine]
+  - id: forecast
+    prompt: "Aylık collection için backtest içeren tahmin oluştur."
+    expected_tools: [analytics_engine]
+  - id: dpd
+    prompt: "NPL dosyasını DPD bucket bazında yaşlandır."
+    expected_tools: [npl_engine]
+  - id: vintage
+    prompt: "Satın alma çeyreklerine göre vintage collection curve çıkar."
+    expected_tools: [npl_engine]
+  - id: roll_rate
+    prompt: "Account snapshotlarından roll-rate matrisi çıkar."
+    expected_tools: [npl_engine]
+  - id: valuation
+    prompt: "Recovery ve discount varsayımlarına göre NPV/MOIC scenario grid oluştur."
+    expected_tools: [npl_engine]
+  - id: knowledge
+    prompt: "Şirket bilgi bankasında Recovery Rate tanımını ara; kaynak yoksa uydurma."
+    expected_tools: [knowledge_search]
+  - id: memory_candidate
+    prompt: "Bu yeni KPI tanımını aday iş kuralı olarak kaydet, otomatik onaylama."
+    expected_tools: [memory_propose]
+  - id: sql_read_only
+    prompt: "main veritabanında tabloları listele ve sadece read-only çalış."
+    expected_tools: [database_catalog]
+  - id: public_research
+    prompt: "İnternet açıksa yalnızca kamuya açık kaynaklarda güncel düzenlemeyi araştır; yerel satır verisi gönderme."
+    expected_tools: [public_web_search]

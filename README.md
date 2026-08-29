@@ -11,6 +11,18 @@ Amaç: hassas dosyaları varsayılan olarak bilgisayarınızda tutarken doğal d
 > modelleri, Excel COM, canlı veritabanları ve OpenClaw entegrasyonu hedef bilgisayarda ayrıca
 > doğrulanmalıdır. Ayrıntı: `docs/PRE_RELEASE_AUDIT.md`.
 
+## İlk kez kuracaklar
+
+Teknik bilginiz azsa **[Türkçe Adım Adım Kurulum ve Kullanım Rehberi](docs/KURULUM_VE_KULLANIM_TR.md)**
+ile başlayın. Kısa yol:
+
+1. Python 3.12 ve Ollama'yı kurun.
+2. Repoyu ZIP olarak indirin ve klasöre çıkarın.
+3. Klasörde PowerShell açıp `Set-ExecutionPolicy -Scope Process Bypass` çalıştırın.
+4. `.\scripts\install_windows.ps1` çalıştırın; `qwen3.5:9b` sorusuna `E`, ağır model
+   sorusuna ilk kurulumda `H` deyin.
+5. `.\scripts\start_windows.ps1` çalıştırıp `http://127.0.0.1:8765` adresini açın.
+
 ## Zorunlu ücret var mı?
 **Hayır.** Varsayılan kurulum Ollama + yerel açık modeller + Python kütüphaneleridir. Ücretli OpenAI/Anthropic API anahtarı gerekmez. İnternet araştırması opsiyoneldir ve varsayılan olarak kapalıdır.
 

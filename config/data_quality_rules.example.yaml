@@ -1,0 +1,16 @@
+rules:
+  - name: account_id_required
+    column: account_id
+    type: not_null
+    severity: critical
+  - name: total_balance_nonnegative
+    column: total_balance
+    type: min
+    value: 0
+    severity: critical
+  - name: dpd_plausible
+    column: dpd
+    type: between
+    min: 0
+    max: 10000
+    severity: warning

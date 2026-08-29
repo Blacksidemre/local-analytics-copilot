@@ -1,0 +1,11 @@
+profiles:
+  main_postgres:
+    dialect: postgres
+    url_env: LAC_DB_MAIN_URL
+    schemas: [public]
+    read_only: true
+  sqlserver:
+    dialect: tsql
+    url_env: LAC_DB_SQLSERVER_URL
+    schemas: [dbo]
+    read_only: true

@@ -1,0 +1,23 @@
+# Beginner Glossary
+
+- **LLM:** Metin anlayıp üreten büyük dil modeli. Bizde karar/verbal açıklama katmanı.
+- **Inference:** Eğitilmiş modelin sizin bilgisayarınızda cevap üretmesi.
+- **Ollama:** Yerel modelleri indirip çalıştıran servis.
+- **Tool / Function Calling:** Modelin hesap yapmak yerine tanımlı bir Python/SQL fonksiyonunu çağırması.
+- **Agent loop:** Model → araç çağrısı → araç sonucu → model döngüsü.
+- **Orchestration:** Birden fazla adım, araç ve kuralın hangi sırayla çalışacağını yönetme.
+- **OpenClaw:** Yerel/cloud modelleri araçlar, skills ve pluginlerle orkestre edebilen agent platformu.
+- **Skill:** Ajana bir işi nasıl yapacağını öğreten tekrar kullanılabilir talimat paketi.
+- **MCP:** Ajanlarla harici araçlar arasında standart bağlantı protokolü.
+- **RAG:** Model cevap vermeden önce yerel dokümanlardan ilgili bilgiyi bulup bağlama ekleme.
+- **Embedding:** Metinleri anlamsal arama için sayısal vektörlere çevirme.
+- **Sandbox:** Ajanın dosya/komut erişimini belirli sınırlar içinde tutma.
+- **Schema:** Veri tablosunun kolon, tip ve ilişkilerinin yapısı.
+- **Data profiling:** Kolon tipleri, eksikler, tekillikler, dağılımlar ve kalite sorunlarının sistematik özeti.
+- **Effect size:** İstatistiksel farkın yalnızca varlığını değil, büyüklüğünü ölçer.
+- **Confidence interval:** Tahminin belirsizliği için aralık.
+- **DPD:** Days Past Due; gecikme gün sayısı.
+- **Vintage/Cohort:** Aynı başlangıç dönemindeki hesap/portföylerin zaman içindeki performans karşılaştırması.
+- **Recovery Rate:** Tahsilat/geri kazanım oranı; kesin formül şirket iş kuralına bağlıdır.
+- **MOIC:** Yatırılan sermayenin kaç katının geri döndüğünü gösteren çarpan.
+- **NPV:** Gelecekteki nakit akışlarının bugünkü değeri.

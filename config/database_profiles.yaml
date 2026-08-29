@@ -1,0 +1,12 @@
+profiles:
+  # Example only. Put the real URL in an environment variable.
+  main:
+    url_env: LAC_DB_MAIN_URL
+    dialect: postgres
+    schemas: [public]
+    read_only: true
+  sqlserver:
+    url_env: LAC_DB_SQLSERVER_URL
+    dialect: tsql
+    schemas: [dbo]
+    read_only: true

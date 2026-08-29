@@ -1,0 +1,307 @@
+from __future__ import annotations
+
+import hmac
+import uuid
+from typing import Literal
+
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.responses import HTMLResponse, JSONResponse
+from pydantic import BaseModel, Field
+
+from lacopilot import __version__
+from lacopilot.actions import ActionStore
+from lacopilot.audit import audit
+from lacopilot.config import get_settings
+from lacopilot.conversations import ConversationStore
+from lacopilot.hardware import detect_hardware
+from lacopilot.knowledge import KnowledgeBase
+from lacopilot.llm import OllamaAgent
+from lacopilot.memory import LocalMemory
+from lacopilot.personality import load_profiles, save_custom_profile
+from lacopilot.privacy import privacy_status
+from lacopilot.tools import TOOL_MAP
+from lacopilot.tools.data_tools import profile_dataset
+
+app = FastAPI(title="Local Analytics Copilot", version=__version__)
+
+
+@app.middleware("http")
+async def optional_api_token(request: Request, call_next):
+    s = get_settings()
+    if s.api_token and request.url.path.startswith("/api/"):
+        supplied = request.headers.get("x-lac-token", "")
+        auth = request.headers.get("authorization", "")
+        if auth.lower().startswith("bearer "):
+            supplied = auth[7:].strip()
+        if not hmac.compare_digest(supplied, s.api_token):
+            return JSONResponse(
+                status_code=401,
+                content={"detail": "Invalid or missing LAC API token"},
+            )
+    response = await call_next(request)
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["X-Frame-Options"] = "DENY"
+    response.headers["Referrer-Policy"] = "no-referrer"
+    response.headers["Cache-Control"] = "no-store"
+    response.headers["Content-Security-Policy"] = (
+        "default-src 'self'; style-src 'self' 'unsafe-inline'; "
+        "script-src 'self' 'unsafe-inline'; img-src 'self' data:; frame-ancestors 'none'"
+    )
+    return response
+
+
+class ChatRequest(BaseModel):
+    message: str = Field(min_length=1, max_length=100_000)
+    personality: str | None = Field(default=None, max_length=64)
+    model_mode: Literal["fast", "main", "deep"] | None = None
+    conversation_id: str | None = Field(default=None, max_length=100)
+
+
+class AnalyzeRequest(BaseModel):
+    file_path: str = Field(min_length=1, max_length=1000)
+    sheet_name: str = Field(default="0", max_length=200)
+
+
+class KnowledgeIngestRequest(BaseModel):
+    file_path: str = Field(min_length=1, max_length=1000)
+    embed_model: str | None = Field(default=None, max_length=200)
+    ocr: bool = False
+
+
+class MemoryDecisionRequest(BaseModel):
+    memory_id: int
+
+
+class PersonalitySaveRequest(BaseModel):
+    label: str
+    tone: str = "clear, professional"
+    teaching_level: int = 7
+    technical_depth: int = 6
+    directness: int = 7
+    explain_method_choice: bool = True
+    explain_business_impact: bool = True
+    show_formulas: str = "when useful"
+    rules: list[str] = Field(default_factory=list, max_length=50)
+
+
+class LearningUpdateRequest(BaseModel):
+    topic: str
+    delta: float
+    note: str = ""
+
+
+def _store() -> ConversationStore:
+    return ConversationStore(get_settings().conversations_db)
+
+
+@app.get("/health")
+def health():
+    return {"status": "ok", "version": __version__}
+
+
+@app.get("/api/hardware")
+def hardware():
+    return detect_hardware()
+
+
+@app.get("/api/tools")
+def tools():
+    return {"tools": list(TOOL_MAP)}
+
+
+def _actions() -> ActionStore:
+    return ActionStore(get_settings().actions_db)
+
+
+def _execute_approved(tool_name: str, arguments: dict):
+    fn = TOOL_MAP.get(tool_name)
+    if not fn or tool_name == "action_status":
+        raise PermissionError(f"Onaylanan action için araç bulunamadı: {tool_name}")
+    audit(get_settings().logs_dir, "action_execute", tool=tool_name, args=arguments)
+    return fn(**arguments)
+
+
+@app.get("/api/actions")
+def action_list(status: str = "pending", limit: int = 100):
+    allowed = {"pending", "running", "completed", "rejected", "failed", ""}
+    if status not in allowed:
+        raise HTTPException(status_code=400, detail="Geçersiz action durumu")
+    return {"items": _actions().list(status=status or None, limit=limit)}
+
+
+@app.get("/api/actions/{action_id}")
+def action_get(action_id: str):
+    try:
+        return _actions().get(action_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Action bulunamadı") from exc
+
+
+@app.post("/api/actions/{action_id}/approve")
+def action_approve(action_id: str):
+    try:
+        result = _actions().approve_and_execute(action_id, _execute_approved)
+    except (KeyError, ValueError) as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    audit(get_settings().logs_dir, "action_decision", action_id=action_id, status=result["status"])
+    return result
+
+
+@app.post("/api/actions/{action_id}/reject")
+def action_reject(action_id: str):
+    try:
+        result = _actions().reject(action_id)
+    except (KeyError, ValueError) as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    audit(get_settings().logs_dir, "action_decision", action_id=action_id, status="rejected")
+    return result
+
+
+@app.get("/api/personalities")
+def personalities():
+    return {"profiles": load_profiles()}
+
+
+@app.post("/api/personalities/{name}")
+def personality_save(name: str, req: PersonalitySaveRequest):
+    if not name.replace("_", "").replace("-", "").isalnum():
+        raise HTTPException(status_code=400, detail="Invalid personality name")
+    profile = req.model_dump()
+    profile["teaching_level"] = max(0, min(10, int(profile["teaching_level"])))
+    profile["technical_depth"] = max(0, min(10, int(profile["technical_depth"])))
+    profile["directness"] = max(0, min(10, int(profile["directness"])))
+    save_custom_profile(name, profile)
+    return {"saved": True, "name": name, "profile": profile}
+
+
+@app.get("/api/privacy")
+def privacy():
+    return privacy_status()
+
+
+@app.post("/api/analyze")
+def analyze(req: AnalyzeRequest):
+    try:
+        return profile_dataset(req.file_path, req.sheet_name)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/api/chat")
+def chat(req: ChatRequest):
+    cid = req.conversation_id or str(uuid.uuid4())
+    store = _store()
+    hist = store.history(cid, limit=24)
+    try:
+        result = OllamaAgent(personality=req.personality, model_mode=req.model_mode).chat(
+            req.message, history=hist
+        )
+        store.append(cid, "user", req.message)
+        store.append(
+            cid,
+            "assistant",
+            result["answer"],
+            {"model": result.get("model"), "tools": result.get("tool_events", [])},
+        )
+        return result | {"conversation_id": cid}
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@app.delete("/api/conversations/{conversation_id}")
+def clear_conversation(conversation_id: str):
+    _store().clear(conversation_id)
+    return {"cleared": True, "conversation_id": conversation_id}
+
+
+@app.post("/api/knowledge/ingest")
+def knowledge_ingest(req: KnowledgeIngestRequest):
+    try:
+        return KnowledgeBase().ingest(req.file_path, embed_model=req.embed_model, ocr=req.ocr)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.get("/api/knowledge/search")
+def knowledge_search(q: str, top_k: int = 5):
+    try:
+        return {"results": KnowledgeBase().search(q, top_k=top_k)}
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.get("/api/memory")
+def memory(status: str = "candidate"):
+    return {"items": LocalMemory(get_settings().memory_db).list(status=status or None)}
+
+
+@app.post("/api/memory/approve")
+def memory_approve(req: MemoryDecisionRequest):
+    LocalMemory(get_settings().memory_db).approve(req.memory_id)
+    return {"approved": True, "id": req.memory_id}
+
+
+@app.post("/api/memory/reject")
+def memory_reject(req: MemoryDecisionRequest):
+    LocalMemory(get_settings().memory_db).reject(req.memory_id)
+    return {"rejected": True, "id": req.memory_id}
+
+
+@app.get("/api/learning")
+def learning_profile():
+    return {"items": LocalMemory(get_settings().memory_db).learning_profile()}
+
+
+@app.post("/api/learning")
+def learning_update(req: LearningUpdateRequest):
+    if not req.topic.strip():
+        raise HTTPException(status_code=400, detail="Topic boş olamaz")
+    delta = max(-25.0, min(25.0, float(req.delta)))
+    return LocalMemory(get_settings().memory_db).update_learning(
+        req.topic.strip(), delta, req.note[:500]
+    )
+
+
+@app.get("/admin", response_class=HTMLResponse)
+def admin():
+    return r"""<!doctype html><html lang='tr'><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'><title>LAC Admin</title>
+<style>body{font-family:system-ui;max-width:980px;margin:30px auto;padding:0 18px;background:#0b1220;color:#e5e7eb}section{border:1px solid #334155;border-radius:12px;padding:16px;margin:14px 0;background:#0f172a}input,textarea{width:100%;box-sizing:border-box;margin:5px 0;padding:9px;background:#111827;color:#fff;border:1px solid #334155;border-radius:7px}button{padding:9px 13px;background:#1e293b;color:#fff;border:1px solid #475569;border-radius:8px;cursor:pointer}pre{white-space:pre-wrap;background:#111827;padding:12px;border-radius:8px}.row{display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px}@media(max-width:700px){.row{grid-template-columns:1fr}}</style></head><body>
+<h1>Local Analytics Copilot — Ayarlar</h1><p><a href='/' style='color:#93c5fd'>← Sohbete dön</a></p>
+<section><h2>Tarayıcı API Token</h2><p>Sunucuda <code>LAC_API_TOKEN</code> ayarlıysa aynı değeri burada yalnızca bu tarayıcıda sakla.</p><input id='token' type='password'><button onclick='saveToken()'>Tarayıcıya Kaydet</button></section>
+<section><h2>Kişilik Oluştur / Düzenle</h2><input id='pn' value='my_mentor' placeholder='profile key'><input id='label' value='My Mentor' placeholder='Label'><input id='tone' value='clear, patient, professional' placeholder='Tone'><div class='row'><input id='teach' type='number' min='0' max='10' value='9' placeholder='Teaching'><input id='tech' type='number' min='0' max='10' value='5' placeholder='Technical'><input id='direct' type='number' min='0' max='10' value='6' placeholder='Directness'></div><textarea id='rules' rows='4' placeholder='Her satıra bir kural'></textarea><button onclick='saveP()'>Kişiliği Kaydet</button><pre id='pout'></pre></section>
+<section><h2>Bilgi Bankasına Dosya Ekle</h2><p>Dosya önce <code>workspace/knowledge</code> altında olmalı.</p><input id='kf' placeholder='knowledge/prosedur.pdf'><input id='em' placeholder='optional embedding model, e.g. embeddinggemma'><button onclick='ingest()'>Ingest</button><pre id='kout'></pre></section>
+<section><h2>Onay Bekleyen Hafıza / İş Kuralları</h2><button onclick='loadM()'>Adayları Yükle</button><input id='mid' type='number' placeholder='Memory ID'><button onclick='decide("approve")'>Onayla</button><button onclick='decide("reject")'>Reddet</button><pre id='mout'></pre></section>
+<section><h2>Onay Bekleyen İşlemler</h2><p>Dosya üretimi ve dış ağ çağrıları burada, tam araç adı ve argümanlarıyla bekler. İncelemeden onaylama.</p><button onclick='loadA()'>İşlemleri Yükle</button><input id='aid' placeholder='Action ID'><button onclick='actionDecision("approve")'>Onayla ve Çalıştır</button><button onclick='actionDecision("reject")'>Reddet</button><pre id='aout'></pre></section>
+<section><h2>Privacy Check</h2><button onclick='privacy()'>Kontrol Et</button><pre id='priv'></pre></section>
+<script>
+function H(){let t=localStorage.getItem('lac_token')||'';return {'Content-Type':'application/json',...(t?{'X-LAC-Token':t}:{})}}
+function saveToken(){localStorage.setItem('lac_token',document.getElementById('token').value);alert('Tarayıcıda saklandı.')}
+async function saveP(){let name=pn.value;let body={label:label.value,tone:tone.value,teaching_level:+teach.value,technical_depth:+tech.value,directness:+direct.value,rules:rules.value.split('\n').filter(Boolean)};let r=await fetch('/api/personalities/'+name,{method:'POST',headers:H(),body:JSON.stringify(body)});pout.textContent=JSON.stringify(await r.json(),null,2)}
+async function ingest(){let r=await fetch('/api/knowledge/ingest',{method:'POST',headers:H(),body:JSON.stringify({file_path:kf.value,embed_model:em.value||null})});kout.textContent=JSON.stringify(await r.json(),null,2)}
+async function loadM(){let r=await fetch('/api/memory?status=candidate',{headers:H()});mout.textContent=JSON.stringify(await r.json(),null,2)}
+async function decide(x){let r=await fetch('/api/memory/'+x,{method:'POST',headers:H(),body:JSON.stringify({memory_id:+mid.value})});mout.textContent=JSON.stringify(await r.json(),null,2);loadM()}
+async function loadA(){let r=await fetch('/api/actions?status=pending',{headers:H()});aout.textContent=JSON.stringify(await r.json(),null,2)}
+async function actionDecision(x){let id=aid.value.trim();if(!id)return;let r=await fetch('/api/actions/'+id+'/'+x,{method:'POST',headers:H()});aout.textContent=JSON.stringify(await r.json(),null,2);loadA()}
+async function privacy(){let r=await fetch('/api/privacy',{headers:H()});priv.textContent=JSON.stringify(await r.json(),null,2)}
+</script></body></html>"""
+
+
+@app.get("/", response_class=HTMLResponse)
+def home():
+    return r"""<!doctype html><html lang='tr'><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'><title>Local Analytics Copilot</title>
+<style>
+body{font-family:Inter,system-ui;max-width:1180px;margin:28px auto;padding:0 18px;background:#0b1220;color:#e5e7eb}h1{margin-bottom:4px}.muted{color:#94a3b8}.grid{display:grid;grid-template-columns:1fr 180px 150px;gap:10px}textarea,input,select{width:100%;box-sizing:border-box;padding:12px;background:#111827;color:#fff;border:1px solid #334155;border-radius:9px}button{padding:11px 16px;border:1px solid #475569;background:#1e293b;color:#fff;border-radius:9px;cursor:pointer}button:hover{background:#334155}#chat{background:#0f172a;border:1px solid #25324a;border-radius:12px;min-height:420px;padding:14px;margin-top:14px;overflow:auto}.msg{padding:11px 13px;border-radius:10px;margin:9px 0;white-space:pre-wrap}.u{background:#1e293b}.a{background:#111827;border:1px solid #25324a}.tools{font-size:12px;color:#94a3b8;margin-top:8px}.bar{display:flex;gap:8px;margin-top:10px;flex-wrap:wrap}code{color:#93c5fd}@media(max-width:760px){.grid{grid-template-columns:1fr}.bar button{flex:1}}</style></head>
+<body><h1>Local Analytics Copilot 1.0 RC1</h1><div class='muted'>Yerel veri analisti + istatistik mentoru + BI/NPL copilot. Ücretli cloud API zorunlu değildir. <a href='/admin' style='color:#93c5fd'>Ayarlar ve onaylar</a></div>
+<div class='grid' style='margin-top:16px'><textarea id='msg' rows='3' placeholder="Örn: incoming/portfolio.xlsx dosyasını incele; veri kalitesini değerlendir, uygun analiz planını öğret ve bir Excel dashboard oluştur."></textarea>
+<select id='p'><option value='mentor'>Mentor</option><option value='senior_analyst'>Senior Analyst</option><option value='executive'>Executive</option><option value='technical'>Technical</option></select>
+<select id='mode'><option value='main'>Main</option><option value='fast'>Fast</option><option value='deep'>Deep</option></select></div>
+<div class='bar'><button onclick='send()'>Gönder</button><button onclick='resetChat()'>Yeni Sohbet</button><button onclick='health()'>Sistem Durumu</button></div>
+<div id='chat'><div class='msg a'>Hazır. Dosyalarını <code>workspace/incoming</code> altına koy. Şirket dokümanları için <code>workspace/knowledge</code> kullan.</div></div>
+<script>
+let cid=localStorage.getItem('lac_cid')||crypto.randomUUID(); localStorage.setItem('lac_cid',cid); function H(){let t=localStorage.getItem('lac_token')||'';return {'Content-Type':'application/json',...(t?{'X-LAC-Token':t}:{})}}
+function add(cls,text,tools=''){let c=document.getElementById('chat'),d=document.createElement('div');d.className='msg '+cls;d.textContent=text;if(tools){let t=document.createElement('div');t.className='tools';t.textContent=tools;d.appendChild(t)}c.appendChild(d);c.scrollTop=c.scrollHeight}
+async function send(){let msg=document.getElementById('msg').value.trim();if(!msg)return;add('u',msg);document.getElementById('msg').value='';add('a','Çalışıyor...');let pending=document.getElementById('chat').lastChild;try{let r=await fetch('/api/chat',{method:'POST',headers:H(),body:JSON.stringify({message:msg,personality:document.getElementById('p').value,model_mode:document.getElementById('mode').value,conversation_id:cid})});let j=await r.json();pending.remove();if(r.ok){let ev=j.tool_events||[];let queued=ev.filter(x=>x.status==='approval_required').length;add('a',j.answer,'Model: '+j.model+' | Tools: '+ev.map(x=>x.tool).join(', ')+(queued?' | Onay bekleyen: '+queued:''));}else add('a',JSON.stringify(j,null,2));}catch(e){pending.remove();add('a','Bağlantı hatası: '+e.message)}}
+async function resetChat(){await fetch('/api/conversations/'+cid,{method:'DELETE',headers:H()});cid=crypto.randomUUID();localStorage.setItem('lac_cid',cid);document.getElementById('chat').innerHTML='';add('a','Yeni sohbet başladı.');}
+async function health(){let r=await fetch('/health'),j=await r.json();add('a',JSON.stringify(j,null,2));}
+document.getElementById('msg').addEventListener('keydown',e=>{if(e.key==='Enter'&&e.ctrlKey)send()});
+</script></body></html>"""
