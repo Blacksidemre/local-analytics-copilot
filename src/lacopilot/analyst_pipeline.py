@@ -18,6 +18,12 @@ TargetKind = Literal["binary", "continuous", "categorical"]
 
 _MAX_PREDICTORS = 50
 _DEFAULT_PREDICTOR_ROLES = {"numeric", "categorical", "boolean"}
+_FINDING_SUFFIXES = {
+    "effect": ".effect",
+    "p_value": ".p_value",
+    "adjusted_p_value": ".adjusted_p_value",
+    "n": ".n",
+}
 
 
 def _sheet_arg(sheet_name: str) -> str | int:
@@ -405,31 +411,99 @@ def verify_analyst_payload(payload: dict[str, Any]) -> dict[str, Any]:
         if not finding.get("source"):
             errors.append({"code": "missing_source", "message": finding_id})
 
+    analyses = payload.get("analyses", [])
     analysis_ids: set[str] = set()
-    for analysis in payload.get("analyses", []):
+    referenced_finding_ids: set[str] = set()
+    raw_p_values: list[float] = []
+    adjusted_p_values: list[tuple[str, float]] = []
+    can_recompute_adjustment = True
+    target_column = payload.get("target_semantics", {}).get("column")
+    for analysis in analyses:
         analysis_id = analysis.get("analysis_id")
+        if not isinstance(analysis_id, str) or not analysis_id:
+            errors.append({"code": "invalid_analysis_id", "message": str(analysis_id)})
+            continue
         if analysis_id in analysis_ids:
             errors.append({"code": "duplicate_analysis_id", "message": str(analysis_id)})
-        analysis_ids.add(str(analysis_id))
+        analysis_ids.add(analysis_id)
+        if analysis.get("target") != target_column:
+            errors.append({"code": "analysis_target_mismatch", "message": analysis_id})
         references = analysis.get("finding_ids", {})
-        if not isinstance(references, dict) or set(references) != {
-            "effect",
-            "p_value",
-            "adjusted_p_value",
-            "n",
-        }:
+        if not isinstance(references, dict) or set(references) != set(_FINDING_SUFFIXES):
             errors.append({"code": "invalid_finding_reference_set", "message": str(analysis_id)})
+            can_recompute_adjustment = False
             continue
+        expected_references = {
+            role: f"{analysis_id}{suffix}" for role, suffix in _FINDING_SUFFIXES.items()
+        }
+        if references != expected_references:
+            errors.append({"code": "invalid_finding_id_chain", "message": analysis_id})
+        referenced_finding_ids.update(references.values())
         if any(finding_id not in finding_index for finding_id in references.values()):
             errors.append({"code": "unknown_finding_reference", "message": str(analysis_id)})
+            can_recompute_adjustment = False
             continue
-        raw_p = finding_index[references["p_value"]]["value"]
-        adjusted_p = finding_index[references["adjusted_p_value"]]["value"]
+        expected_dimension = {
+            "target": analysis.get("target"),
+            "predictor": analysis.get("predictor"),
+            "method": analysis.get("method"),
+        }
+        expected_units = {
+            "effect": analysis.get("effect_name"),
+            "p_value": "p_value",
+            "adjusted_p_value": "adjusted_p_value",
+            "n": "observations",
+        }
+        for role, finding_id in references.items():
+            finding = finding_index[finding_id]
+            if finding.get("dimension") != expected_dimension:
+                errors.append(
+                    {"code": "finding_dimension_mismatch", "message": f"{analysis_id}:{role}"}
+                )
+            if finding.get("unit") != expected_units[role]:
+                errors.append({"code": "finding_unit_mismatch", "message": f"{analysis_id}:{role}"})
+        if (
+            finding_index[references["adjusted_p_value"]].get("source")
+            != "benjamini_hochberg_all_executed_tests"
+        ):
+            errors.append({"code": "adjustment_source_mismatch", "message": analysis_id})
+        if finding_index[references["n"]].get("source") != "pairwise_complete_observation_count":
+            errors.append({"code": "observation_source_mismatch", "message": analysis_id})
+
+        raw_p = finding_index[references["p_value"]].get("value")
+        adjusted_p = finding_index[references["adjusted_p_value"]].get("value")
+        valid_pair = all(
+            isinstance(value, (int, float))
+            and not isinstance(value, bool)
+            and math.isfinite(float(value))
+            for value in (raw_p, adjusted_p)
+        )
+        if not valid_pair:
+            can_recompute_adjustment = False
+            continue
+        raw_p_values.append(float(raw_p))
+        adjusted_p_values.append((analysis_id, float(adjusted_p)))
         if adjusted_p < raw_p:
             errors.append({"code": "invalid_multiple_test_adjustment", "message": str(analysis_id)})
+        observations = finding_index[references["n"]].get("value")
+        if not isinstance(observations, int) or isinstance(observations, bool) or observations < 1:
+            errors.append({"code": "invalid_observation_count", "message": analysis_id})
+
+    orphan_findings = sorted(set(finding_index) - referenced_finding_ids)
+    if orphan_findings:
+        errors.append({"code": "orphan_findings", "message": ", ".join(orphan_findings[:20])})
+    if can_recompute_adjustment and len(raw_p_values) == len(analyses):
+        expected_adjusted = _benjamini_hochberg(raw_p_values)
+        for (analysis_id, actual), expected in zip(
+            adjusted_p_values, expected_adjusted, strict=True
+        ):
+            if not math.isclose(actual, expected, rel_tol=1e-12, abs_tol=1e-15):
+                errors.append({"code": "multiple_test_value_mismatch", "message": analysis_id})
 
     card_ids: set[str] = set()
-    for card in payload.get("dashboard", {}).get("cards", []):
+    dashboard = payload.get("dashboard", {})
+    cards = dashboard.get("cards", [])
+    for card in cards:
         card_id = card.get("finding_id")
         if card_id in card_ids:
             errors.append({"code": "duplicate_dashboard_card", "message": str(card_id)})
@@ -443,6 +517,26 @@ def verify_analyst_payload(payload: dict[str, Any]) -> dict[str, Any]:
             errors.append(
                 {"code": "unbound_dashboard_card", "message": str(card.get("finding_id"))}
             )
+    expected_card_ids: list[str] = []
+    if len(adjusted_p_values) == len(analyses):
+        expected_card_ids = [
+            analysis["finding_ids"]["effect"]
+            for analysis in sorted(
+                analyses,
+                key=lambda item: (
+                    finding_index[item["finding_ids"]["adjusted_p_value"]]["value"],
+                    item["finding_ids"]["effect"],
+                ),
+            )[:5]
+        ]
+    if [card.get("finding_id") for card in cards] != expected_card_ids:
+        errors.append({"code": "invalid_dashboard_ranking", "message": str(expected_card_ids)})
+    if (
+        dashboard.get("schema_version") != 1
+        or dashboard.get("ranking_basis") != "adjusted_p_value_then_finding_id"
+        or dashboard.get("evidence_policy") != "all_numeric_cards_bound_to_finding_id"
+    ):
+        errors.append({"code": "invalid_dashboard_contract", "message": "Analyst dashboard"})
 
     semantics = payload.get("target_semantics", {})
     if semantics.get("selection_source") != "explicit_request":
@@ -454,13 +548,27 @@ def verify_analyst_payload(payload: dict[str, Any]) -> dict[str, Any]:
                 "message": "Business meaning must be unverified",
             }
         )
+    if semantics.get("business_meaning") is not None:
+        errors.append(
+            {"code": "unsupported_business_semantics", "message": "Business meaning invented"}
+        )
+    if semantics.get("statistical_role") not in {"binary", "continuous", "categorical"}:
+        errors.append({"code": "invalid_target_role", "message": str(semantics)})
     kpis = payload.get("kpi_selection", {})
     if kpis.get("status") != "requires_approved_definition" or kpis.get("selected"):
         errors.append({"code": "unsupported_kpi_selection", "message": "No approved KPI supplied"})
+    multiple_testing = payload.get("multiple_testing", {})
+    if multiple_testing != {
+        "method": "benjamini_hochberg",
+        "family": "all_executed_target_association_tests",
+    }:
+        errors.append(
+            {"code": "invalid_multiple_testing_contract", "message": str(multiple_testing)}
+        )
 
     return {
         "status": "passed" if not errors else "failed",
-        "scope": "finding_references_numeric_sources_multiple_testing_and_semantics",
+        "scope": "finding_chain_dimensions_sources_multiple_testing_dashboard_and_semantics",
         "errors": errors,
     }
 

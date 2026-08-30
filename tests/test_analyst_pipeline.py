@@ -1,4 +1,5 @@
 import sys
+from copy import deepcopy
 from io import BytesIO
 from pathlib import Path
 from types import SimpleNamespace
@@ -164,6 +165,48 @@ def test_analyst_verifier_rejects_unbound_card_and_business_semantics(tmp_path, 
         "unbound_dashboard_card",
         "invalid_numeric_value",
         "unsupported_business_semantics",
+    }
+
+
+def test_analyst_verifier_recomputes_evidence_chain_adjustment_and_ranking(tmp_path, monkeypatch):
+    settings = configure(tmp_path, monkeypatch)
+    paths = write_credit_risk_regression_fixture(settings.incoming_dir)
+    payload = run_analyst_pipeline(
+        f"incoming/{paths['csv'].name}",
+        "default_next_30d",
+        predictor_columns=["utilization_rate", "customer_segment", "legal_status"],
+    )
+
+    wrong_adjustment = deepcopy(payload)
+    adjusted_id = wrong_adjustment["analyses"][0]["finding_ids"]["adjusted_p_value"]
+    adjusted_finding = next(
+        finding for finding in wrong_adjustment["findings"] if finding["finding_id"] == adjusted_id
+    )
+    adjusted_finding["value"] = 0.5 if adjusted_finding["value"] != 0.5 else 0.6
+    assert "multiple_test_value_mismatch" in {
+        error["code"] for error in verify_analyst_payload(wrong_adjustment)["errors"]
+    }
+
+    broken_chain = deepcopy(payload)
+    broken_chain["analyses"][0]["finding_ids"]["effect"] = broken_chain["analyses"][1][
+        "finding_ids"
+    ]["effect"]
+    assert "invalid_finding_id_chain" in {
+        error["code"] for error in verify_analyst_payload(broken_chain)["errors"]
+    }
+
+    orphan = deepcopy(payload)
+    orphan_finding = deepcopy(orphan["findings"][0])
+    orphan_finding["finding_id"] = "analyst.orphan.effect"
+    orphan["findings"].append(orphan_finding)
+    assert "orphan_findings" in {
+        error["code"] for error in verify_analyst_payload(orphan)["errors"]
+    }
+
+    wrong_ranking = deepcopy(payload)
+    wrong_ranking["dashboard"]["cards"][:2] = reversed(wrong_ranking["dashboard"]["cards"][:2])
+    assert "invalid_dashboard_ranking" in {
+        error["code"] for error in verify_analyst_payload(wrong_ranking)["errors"]
     }
 
 
@@ -363,6 +406,7 @@ def test_analyst_html_and_pdf_reports_reopen_with_verified_evidence(tmp_path, mo
         predictor_columns=["predictor"],
     )
 
+    excel_result = create_analyst_excel_report(payload, "verified_analyst.xlsx")
     html_result = create_analyst_html_report(payload, "verified_analyst.html")
     pdf_result = create_analyst_pdf_report(payload, "verified_analyst.pdf")
     html_path = settings.workspace / html_result["output"]
@@ -372,8 +416,19 @@ def test_analyst_html_and_pdf_reports_reopen_with_verified_evidence(tmp_path, mo
 
     assert html_result["schema_version"] == HTML_REPORT_SCHEMA_VERSION
     assert pdf_result["schema_version"] == PDF_REPORT_SCHEMA_VERSION
-    assert html_result["verification"]["status"] == "passed"
-    assert pdf_result["verification"]["status"] == "passed"
+    results = (excel_result, html_result, pdf_result)
+    assert all(result["verification"]["status"] == "passed" for result in results)
+    assert all(
+        result["verification"]["finding_count"] == len(payload["findings"]) for result in results
+    )
+    assert all(
+        result["verification"]["dashboard_card_count"] == len(payload["dashboard"]["cards"])
+        for result in results
+    )
+    assert (
+        html_result["verification"]["manifest_sha256"]
+        == pdf_result["verification"]["manifest_sha256"]
+    )
     assert pdf_result["verification"]["page_count"] >= 3
     assert "never-export" not in html_text
     assert "never-export" not in pdf_text

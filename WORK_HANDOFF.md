@@ -7,9 +7,9 @@ Last validated revision: the current branch HEAD containing this document
 
 ## Completed milestone
 
-Milestone 1 backend/bridge slice is implemented. The user chose to continue without rerunning the
-final Windows acceptance after the two launcher fixes; this is an explicit acceptance deferral, not
-evidence that Windows/Tauri E2E passed.
+Milestone 1 backend/bridge and browser UI paths passed on the user's Windows machine. The native
+Tauri window remains a separate physical acceptance item because Visual C++ Build Tools/link.exe is
+not installed; no desktop E2E success is inferred from browser or CI results.
 
 - Hybrid boundary frozen in `docs/HYBRID_ARCHITECTURE.md`.
 - Hermetic upstream `04e4dca` inspected; current Tauri and XLSX/sheet-picker work is BORROW.
@@ -51,8 +51,9 @@ The first bounded Analyst vertical slice is implemented:
 - Raw p-values are adjusted together with Benjamini-Hochberg correction.
 - Effect, raw p-value, adjusted p-value and complete-case count each receive stable `finding_id`
   evidence.
-- The Analyst verifier rejects duplicate/unknown findings, invalid numeric values, unbound cards,
-  invalid multiple-test correction and invented target/KPI semantics.
+- The Analyst verifier rejects duplicate/unknown/orphan findings, broken analysis-to-finding ID
+  chains, dimension/unit/source drift, invalid observation counts, incorrect recomputed
+  Benjamini-Hochberg values, reordered dashboard cards and invented target/KPI semantics.
 - The Hermetic bridge revalidates the Analyst contract before rendering it.
 - The hybrid UI now lets the user explicitly select a target and target kind, then displays only
   verifier-passed effect cards and method metadata.
@@ -96,9 +97,9 @@ Analyst document report regression      14 passed
 Hermetic report bridge/proxy/UI         28 passed
 Analyst workbook visual sheet pass      PASS (4 sheets)
 Analyst PDF render/reopen pass           PASS (3-page controlled fixture)
-LAC suite excluding local polars crash   69 passed, 1 skipped, 1 deselected; 71.12% coverage
-LAC GitHub CI run 33321827080            PASS (Windows + Linux 3.11/3.12)
-Hermetic GitHub CI run 33322855867       PASS (bridge/UI + Node 24 + Tauri + live hybrid)
+LAC suite excluding local polars crash   70 passed, 1 skipped, 1 deselected; 71.22% coverage
+LAC GitHub CI run 33335996547            PASS (Windows + Linux 3.11/3.12)
+Hermetic GitHub CI run 33324391154       PASS (bridge/UI + Node 24 + Tauri + live hybrid)
 Live hybrid CSV/XLSX contract            PASS (Quick + Analyst + verified XLSX/HTML/PDF)
 ```
 
@@ -140,13 +141,14 @@ duplicate rows including originals   16
 
 ## Known limits / blockers
 
-- The PowerShell launcher behavior is regression-tested statically but must still be run on the
-  user's actual Windows 11 machine; `pwsh` is unavailable in this Linux workspace.
+- The LAC PowerShell launcher, UTF-8 output, Docker-off warning and health checks passed on the
+  user's Windows machine. PowerShell is unavailable in this Linux workspace, so later launcher
+  changes still rely on Windows CI plus the recorded physical result.
 - Hermetic upload/Quick UI is wired on `Blacksidemre/hermetic: lac-data-bridge-integration`.
 - Hermetic local Investigate remains disabled upstream. Do not remove its provider gate until the
   bounded local planner/verifier design in Milestone 3 is implemented and evaluated.
-- Live Qwen interpretation, Docker Desktop and Tauri-on-Windows were not available in this Linux
-  workspace.
+- Live Qwen, Analyst, verifier and report generation passed on the user's Windows browser path.
+  Tauri-on-Windows remains blocked only by the missing Visual C++ Build Tools/link.exe prerequisite.
 - GitHub's Windows runner verifies the LAC Python suite, Hermetic's Node 24 ESM launcher and that
   the Tauri Rust shell compiles. It is not evidence that the full desktop, local Ollama and Docker
   Desktop path passed interactively on the user's actual machine.
@@ -160,28 +162,20 @@ duplicate rows including originals   16
 
 ## Next milestone action
 
-Continue Milestone 2 without starting Agent work:
-
-1. On the user's actual Windows/Tauri environment, download and open the verified Excel, HTML and
-   PDF reports from one controlled Analyst run.
-2. Freeze Milestone 2 after that physical acceptance; do not begin Agent work before its separate
-   planner/executor/verifier acceptance contract is approved.
-3. Keep company KPI selection blocked until an approved definition is supplied.
+Milestone 2's deterministic Analyst/browser contract is frozen. Begin only the bounded Milestone 3
+planner/executor/verifier foundation; keep company KPI selection blocked until an approved
+definition is supplied and do not enable arbitrary Python/shell execution.
 
 ## Acceptance still required on Windows
 
 ```text
-double click launcher
-→ Ollama detected/started
-→ Docker detected
-→ backend ready
-→ Hermetic/Tauri UI opens
+install Visual Studio Desktop development with C++ + Windows SDK
+→ pnpm desktop:dev
+→ Hermetic/Tauri native window opens
 → CSV and XLSX upload
 → correct 1508 x 22 profile
 → 52 missing cells / 8 duplicate copies
-→ Qwen interpretation cites supplied facts
-→ dashboard cards bind to finding IDs
-→ no cloud provider used
+→ one Analyst run and verified report download
 ```
 
 `main` must remain untouched until this full path passes.
