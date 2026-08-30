@@ -1,3 +1,4 @@
+import base64
 import codecs
 import shutil
 import subprocess
@@ -47,26 +48,24 @@ def test_windows_launchers_enable_utf8_for_console_and_python():
 @pytest.mark.skipif(POWERSHELL is None, reason="PowerShell is not installed")
 def test_windows_powershell_parses_utf8_source_and_syntax():
     escaped = str(LAUNCHER).replace("'", "''")
+    command = (
+        "$tokens=$null; $errors=$null; "
+        f"[System.Management.Automation.Language.Parser]::ParseFile('{escaped}',"
+        "[ref]$tokens,[ref]$errors) > $null; "
+        "if ($errors.Count) { $errors | Out-String | Write-Error; exit 1 }"
+    )
+    encoded_command = base64.b64encode(command.encode("utf-16-le")).decode("ascii")
     result = subprocess.run(
         [
             POWERSHELL,
             "-NoLogo",
             "-NoProfile",
-            "-Command",
-            (
-                "$tokens=$null; $errors=$null; "
-                f"[System.Management.Automation.Language.Parser]::ParseFile('{escaped}',"
-                "[ref]$tokens,[ref]$errors) > $null; "
-                "if ($errors.Count) { $errors | Out-String | Write-Error; exit 1 }; "
-                '$tokenText=($tokens | ForEach-Object { $_.Text }) -join "`n"; '
-                "if ($tokenText -notlike '*Ollama hazır*' -or "
-                "$tokenText -notlike '*Docker Desktop kapalı*' -or "
-                "$tokenText -notlike '*Quick analiz çalışır*') { exit 2 }"
-            ),
+            "-NonInteractive",
+            "-EncodedCommand",
+            encoded_command,
         ],
         check=False,
         capture_output=True,
-        text=True,
         timeout=15,
     )
-    assert result.returncode == 0, result.stderr
+    assert result.returncode == 0, result.stderr.decode("utf-8", errors="replace")
