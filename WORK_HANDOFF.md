@@ -56,8 +56,11 @@ The first bounded Analyst vertical slice is implemented:
 - The Hermetic bridge revalidates the Analyst contract before rendering it.
 - The hybrid UI now lets the user explicitly select a target and target kind, then displays only
   verifier-passed effect cards and method metadata.
-- Local-model explanation and report generation remain deferred; this slice establishes their
-  authoritative evidence input first.
+- Local Qwen receives only the bounded top-card Analyst digest, never raw rows. Numeric statements
+  must cite matching Analyst findings; unsupported causal, predictive, significance, risk and
+  business-importance claims are rejected and hidden from the UI.
+- Analyst report generation remains deferred; the verified finding manifest is now its
+  authoritative input.
 
 ## Validation
 
@@ -72,6 +75,8 @@ git diff --check                      PASS
 Analyst + ingestion regression        28 passed, 1 skipped (PowerShell absent)
 Hermetic Analyst bridge/UI Vitest     16 passed
 Hermetic TypeScript + ESLint          PASS
+Analyst interpretation regression     8 passed
+Hermetic interpretation bridge/UI     15 passed
 ```
 
 The full coverage run reached the unrelated statistics path and the Linux runner terminated while
@@ -96,11 +101,14 @@ duplicate rows including originals   16
 - `src/lacopilot/ingestion.py`
 - `src/lacopilot/dataset_uploads.py`
 - `src/lacopilot/quick_analysis.py`
+- `src/lacopilot/analyst_pipeline.py`
+- `src/lacopilot/analyst_interpretation.py`
 - `src/lacopilot/regression_fixture.py`
 - `src/lacopilot/app.py`
 - `src/lacopilot/tools/common.py`
 - `src/lacopilot/tools/data_tools.py`
 - `tests/test_ingestion_bridge.py`
+- `tests/test_analyst_pipeline.py`
 - `scripts/launch_windows.ps1`
 - `Start_Local_Analytics_Copilot.cmd`
 - `integrations/hermetic/lac-bridge-client.ts`
@@ -122,10 +130,9 @@ duplicate rows including originals   16
 
 Continue Milestone 2 without starting Agent work:
 
-1. Add bounded local-Qwen explanation over Analyst findings only.
-2. Verify every numerical sentence against the Analyst finding manifest.
-3. Build Analyst dashboard/report output from the same findings, then reopen and validate it.
-4. Keep company KPI selection blocked until an approved definition is supplied.
+1. Build Analyst dashboard/report output from the verified finding manifest.
+2. Reopen the generated output and validate sheets, formulas, card sources and error cells.
+3. Keep company KPI selection blocked until an approved definition is supplied.
 
 ## Acceptance still required on Windows
 

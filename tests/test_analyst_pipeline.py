@@ -1,9 +1,16 @@
+import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pandas as pd
 import pytest
 from fastapi.testclient import TestClient
 
+from lacopilot.analyst_interpretation import (
+    analyst_digest,
+    build_analyst_interpretation_messages,
+    verify_analyst_interpretation,
+)
 from lacopilot.analyst_pipeline import run_analyst_pipeline, verify_analyst_payload
 from lacopilot.app import app
 from lacopilot.config import get_settings
@@ -158,3 +165,106 @@ def test_analyst_api_returns_typed_invalid_request_error(tmp_path, monkeypatch):
 
     assert response.status_code == 422
     assert response.json()["detail"]["code"] == "invalid_analysis_request"
+
+
+def _interpretation_payload(tmp_path, monkeypatch):
+    settings = configure(tmp_path, monkeypatch)
+    pd.DataFrame(
+        {
+            "target": [0] * 12 + [1] * 12,
+            "predictor": list(range(24)),
+            "unused_raw_value": [f"raw-{index}" for index in range(24)],
+        }
+    ).to_csv(settings.incoming_dir / "interpretation.csv", index=False)
+    return run_analyst_pipeline(
+        "incoming/interpretation.csv",
+        "target",
+        predictor_columns=["predictor"],
+    )
+
+
+def test_analyst_interpretation_digest_and_verifier_accept_bound_claims(tmp_path, monkeypatch):
+    payload = _interpretation_payload(tmp_path, monkeypatch)
+    analysis = payload["analyses"][0]
+    finding_ids = analysis["finding_ids"]
+    findings = {finding["finding_id"]: finding for finding in payload["findings"]}
+    effect = findings[finding_ids["effect"]]["value"]
+    adjusted = findings[finding_ids["adjusted_p_value"]]["value"]
+    sample_size = findings[finding_ids["n"]]["value"]
+    text = (
+        f"Etki ölçüsü {effect} [{finding_ids['effect']}], düzeltilmiş p-değeri "
+        f"{adjusted} [{finding_ids['adjusted_p_value']}] ve gözlem sayısı "
+        f"{sample_size} [{finding_ids['n']}]. "
+        "İş anlamı belirlenemiyor ve bu ilişki nedensellik göstermez."
+    )
+
+    digest = analyst_digest(payload)
+    verification = verify_analyst_interpretation(text, payload)
+
+    assert verification["status"] == "passed"
+    assert set(verification["cited_finding_ids"]) == {
+        finding_ids["effect"],
+        finding_ids["adjusted_p_value"],
+        finding_ids["n"],
+    }
+    assert "unused_raw_value" not in str(digest)
+    assert {finding["finding_id"] for finding in digest["evidence"]} == set(finding_ids.values())
+    messages = build_analyst_interpretation_messages(payload, "İlişkileri açıkla")
+    assert "Never recalculate" in messages[0]["content"]
+    assert "raw-0" not in messages[1]["content"]
+
+
+def test_analyst_interpretation_verifier_rejects_invented_numbers_and_semantics(
+    tmp_path, monkeypatch
+):
+    payload = _interpretation_payload(tmp_path, monkeypatch)
+    effect_id = payload["analyses"][0]["finding_ids"]["effect"]
+    text = (
+        f"Predictor 98% ile en önemli sürücüdür ve temerrüt olasılığını tahmin eder "
+        f"[{effect_id}]. Sonuç istatistiksel olarak anlamlıdır. Ek skor 777'dir."
+    )
+
+    verification = verify_analyst_interpretation(text, payload)
+    semantic_codes = {violation["code"] for violation in verification["semantic_violations"]}
+
+    assert verification["status"] == "needs_review"
+    assert verification["numeric_evidence_mismatches"]
+    assert verification["uncited_numeric_claims"]
+    assert semantic_codes >= {
+        "causal_claim",
+        "business_importance_claim",
+        "unsupported_significance_threshold",
+        "unsupported_prediction_semantics",
+    }
+
+
+def test_analyst_pipeline_hides_rejected_local_model_text(tmp_path, monkeypatch):
+    settings = configure(tmp_path, monkeypatch)
+    pd.DataFrame(
+        {
+            "target": [0] * 12 + [1] * 12,
+            "predictor": list(range(24)),
+        }
+    ).to_csv(settings.incoming_dir / "rejected.csv", index=False)
+
+    class FakeClient:
+        def __init__(self, **_kwargs):
+            pass
+
+        def chat(self, **_kwargs):
+            return SimpleNamespace(
+                message=SimpleNamespace(content="Bu değişken 99% ile en önemli risk sürücüsüdür.")
+            )
+
+    monkeypatch.setitem(sys.modules, "ollama", SimpleNamespace(Client=FakeClient))
+    payload = run_analyst_pipeline(
+        "incoming/rejected.csv",
+        "target",
+        predictor_columns=["predictor"],
+        interpret=True,
+    )
+
+    assert payload["verification"]["status"] == "passed"
+    assert payload["interpretation"]["status"] == "rejected"
+    assert "text" not in payload["interpretation"]
+    assert payload["interpretation"]["verification"]["status"] == "needs_review"

@@ -91,6 +91,10 @@ class AnalystAnalysisRequest(DatasetProfileRequest):
     target_column: str = Field(min_length=1, max_length=200)
     target_kind: Literal["binary", "continuous", "categorical"] | None = None
     predictor_columns: list[str] | None = Field(default=None, max_length=50)
+    interpret: bool = True
+    question: str = Field(default="", max_length=20_000)
+    language: str = Field(default="tr", max_length=16)
+    model: str | None = Field(default=None, max_length=200)
 
 
 class KnowledgeIngestRequest(BaseModel):
@@ -361,6 +365,10 @@ def analyst_analysis(req: AnalystAnalysisRequest):
             sheet_name=req.sheet_name,
             target_kind=req.target_kind,
             predictor_columns=req.predictor_columns,
+            interpret=req.interpret,
+            question=req.question,
+            language=req.language,
+            model=req.model,
         )
     except IngestionError as exc:
         raise HTTPException(status_code=422, detail=exc.as_dict()) from exc

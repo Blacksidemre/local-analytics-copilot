@@ -7,6 +7,7 @@ import numpy as np
 import pandas as pd
 from scipy import stats
 
+from lacopilot.analyst_interpretation import interpret_analyst_payload
 from lacopilot.audit import audit
 from lacopilot.config import get_settings
 from lacopilot.security import resolve_workspace_path
@@ -470,6 +471,10 @@ def run_analyst_pipeline(
     sheet_name: str = "0",
     target_kind: TargetKind | None = None,
     predictor_columns: list[str] | None = None,
+    interpret: bool = False,
+    question: str = "",
+    language: str = "tr",
+    model: str | None = None,
 ) -> dict[str, Any]:
     """Run a bounded deterministic target-association screen without inferring business meaning."""
     profile = profile_dataset(file_path, sheet_name)
@@ -535,13 +540,19 @@ def run_analyst_pipeline(
         "findings": findings,
         "dashboard": _build_dashboard(findings),
         "interpretation": {
-            "status": "deferred",
-            "reason": "Analyst v1 establishes deterministic evidence before local-model explanation.",
+            "status": "skipped",
         },
     }
     payload["verification"] = verify_analyst_payload(payload)
     if payload["verification"]["status"] != "passed":
         raise RuntimeError("Analyst payload deterministic verification failed")
+    if interpret:
+        payload["interpretation"] = interpret_analyst_payload(
+            payload,
+            question=question,
+            language=language,
+            model=model,
+        )
     settings = get_settings()
     audit(
         settings.logs_dir,
