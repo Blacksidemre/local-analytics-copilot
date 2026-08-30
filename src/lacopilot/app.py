@@ -22,7 +22,7 @@ from lacopilot.llm import OllamaAgent
 from lacopilot.memory import LocalMemory
 from lacopilot.personality import load_profiles, save_custom_profile
 from lacopilot.privacy import privacy_status
-from lacopilot.quick_analysis import interpret_profile
+from lacopilot.quick_analysis import build_quick_dashboard, interpret_profile
 from lacopilot.security import resolve_workspace_path, validate_ollama_endpoint
 from lacopilot.tools import TOOL_MAP
 from lacopilot.tools.data_tools import profile_dataset
@@ -264,7 +264,13 @@ def _profile_or_http_error(file_path: str, sheet_name: str) -> dict:
 @app.post("/api/v1/datasets/profile")
 def dataset_profile(req: DatasetProfileRequest):
     profile = _profile_or_http_error(req.file_path, req.sheet_name)
-    return {"status": "profiled", "file_path": req.file_path, "profile": profile}
+    return {
+        "status": "profiled",
+        "file_path": req.file_path,
+        "selected_sheet": req.sheet_name,
+        "profile": profile,
+        "dashboard": build_quick_dashboard(profile),
+    }
 
 
 @app.post("/api/v1/datasets/upload", status_code=201)
@@ -300,6 +306,7 @@ async def dataset_upload(
         response["status"] = "profiled"
         response["selected_sheet"] = selected_sheet
         response["profile"] = profile
+        response["dashboard"] = build_quick_dashboard(profile)
         if interpret:
             response["interpretation"] = interpret_profile(profile, question=question)
     return response
@@ -325,6 +332,7 @@ def quick_analysis(req: QuickAnalysisRequest):
         "mode": "quick",
         "file_path": req.file_path,
         "profile": profile,
+        "dashboard": build_quick_dashboard(profile),
         "interpretation": {"status": "skipped"},
     }
     if req.interpret:

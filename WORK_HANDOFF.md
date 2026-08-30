@@ -1,6 +1,6 @@
 # Work Handoff
 
-Updated: 2026-08-29
+Updated: 2026-08-30
 Branch: `hermetic-hybrid-integration`
 Baseline: `cfbc2e2` (`main` and branch were identical before hybrid work)
 Last validated revision: the current branch HEAD containing this document
@@ -19,6 +19,10 @@ Milestone 1 backend/bridge slice is implemented:
 - Upload API writes in bounded chunks under `workspace/incoming` and never overwrites a source.
 - Profiles expose schema, roles, missing, unique counts, duplicates, summaries and date ranges.
 - Authoritative profile numbers have stable `finding_id` values.
+- Quick Dashboard API payload selects KPI cards only by stable `finding_id`, preserves each
+  deterministic calculation source and contains no raw rows.
+- CSV and XLSX regression fixtures now verify the same dashboard card and missing-column contract.
+- Hermetic bridge errors normalize to `{ code, message, hint, details }` for typed UI handling.
 - Quick mode can ask local Ollama to interpret a bounded profile digest without raw rows and reports
   citation-presence verification separately from analytical validation.
 - Windows double-click launcher supports `py -3.12` when the `python` alias is broken.
@@ -30,8 +34,9 @@ Milestone 1 backend/bridge slice is implemented:
 ruff format --check .                 PASS
 ruff check .                          PASS
 python -m compileall -q src scripts   PASS
-pytest -q                             49 passed
-pytest --cov=lacopilot -q             49 passed, 66.29%
+pytest --cov=lacopilot -q             51 passed, 66.64%
+node --check lac-bridge-client.ts     PASS
+bridge client runtime smoke           PASS
 git diff --check                      PASS
 ```
 

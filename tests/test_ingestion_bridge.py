@@ -19,6 +19,7 @@ from lacopilot.ingestion import (
 )
 from lacopilot.quick_analysis import (
     build_interpretation_messages,
+    build_quick_dashboard,
     interpret_profile,
     profile_digest,
     verify_interpretation,
@@ -131,6 +132,32 @@ def test_credit_risk_regression_fixture_contract(tmp_path, monkeypatch, kind):
     assert profile["duplicate_rows"] == 8
     assert profile["duplicate_rows_including_originals"] == 16
     assert profile["ingestion"]["parser"] == "lac-deterministic-data-bridge"
+    dashboard = build_quick_dashboard(profile)
+    cards = {card["finding_id"]: card for card in dashboard["cards"]}
+    assert cards["profile.shape.rows"]["value"] == 1508
+    assert cards["profile.shape.columns"]["value"] == 22
+    assert cards["profile.quality.missing_cells"]["value"] == 52
+    assert cards["profile.quality.exact_duplicate_copies"]["value"] == 8
+    assert dashboard["missing_by_column"] == [
+        {
+            "finding_id": "profile.quality.missing.column.6",
+            "column": "monthly_income_try",
+            "count": 24,
+            "pct": 1.59,
+        },
+        {
+            "finding_id": "profile.quality.missing.column.7",
+            "column": "employment_years",
+            "count": 16,
+            "pct": 1.06,
+        },
+        {
+            "finding_id": "profile.quality.missing.column.12",
+            "column": "payment_ratio_3m",
+            "count": 12,
+            "pct": 0.8,
+        },
+    ]
 
 
 def test_upload_api_profiles_csv_and_returns_stable_findings(tmp_path, monkeypatch):
@@ -155,6 +182,14 @@ def test_upload_api_profiles_csv_and_returns_stable_findings(tmp_path, monkeypat
         "profile.quality.missing_cells",
         "profile.quality.exact_duplicate_copies",
     }
+    assert [card["finding_id"] for card in payload["dashboard"]["cards"]] == [
+        "profile.shape.rows",
+        "profile.shape.columns",
+        "profile.quality.missing_cells",
+        "profile.quality.exact_duplicate_copies",
+        "profile.quality.score_heuristic",
+    ]
+    assert payload["dashboard"]["evidence_policy"] == ("all_numeric_cards_bound_to_finding_id")
 
 
 def test_upload_api_never_silently_accepts_wrong_excel_signature(tmp_path, monkeypatch):
@@ -167,7 +202,12 @@ def test_upload_api_never_silently_accepts_wrong_excel_signature(tmp_path, monke
     )
 
     assert response.status_code == 422
-    assert response.json()["detail"]["code"] == "signature_mismatch"
+    assert response.json()["detail"] == {
+        "code": "signature_mismatch",
+        "message": "Dosya uzantısı Excel olsa da içerik geçerli bir XLSX/XLSM paketi değil.",
+        "hint": "Dosyayı Excel'de yeniden .xlsx olarak kaydedin.",
+        "details": {},
+    }
     assert not list(get_settings().incoming_dir.glob("fake*.xlsx"))
 
 
@@ -214,6 +254,57 @@ def test_quick_interpretation_prompt_contains_facts_not_raw_rows(tmp_path, monke
     assert "profile.quality.missing_cells" in messages[1]["content"]
     assert "C1" not in messages[1]["content"]
     assert "C2" not in messages[1]["content"]
+
+
+def test_quick_dashboard_is_deterministic_and_contains_no_raw_rows(tmp_path, monkeypatch):
+    settings = configure(tmp_path, monkeypatch)
+    pd.DataFrame(
+        {
+            "customer_id": ["C1", "C2", "C3"],
+            "amount": [10, None, None],
+            "segment": ["A", "B", "A"],
+        }
+    ).to_csv(settings.incoming_dir / "small.csv", index=False)
+    profile = profile_dataset("incoming/small.csv")
+
+    dashboard = build_quick_dashboard(profile)
+
+    assert dashboard["dashboard_version"] == 1
+    assert dashboard["missing_by_column"] == [
+        {
+            "finding_id": "profile.quality.missing.column.1",
+            "column": "amount",
+            "count": 2,
+            "pct": 66.67,
+        }
+    ]
+    assert dashboard["role_counts"]
+    assert "sample" not in dashboard
+    assert "sample_rows" not in dashboard
+    assert "C1" not in str(dashboard)
+
+
+def test_quick_api_returns_dashboard_with_stable_finding_sources(tmp_path, monkeypatch):
+    settings = configure(tmp_path, monkeypatch)
+    pd.DataFrame({"amount": [10, 20, 20]}).to_csv(settings.incoming_dir / "small.csv", index=False)
+
+    response = TestClient(app).post(
+        "/api/v1/analysis/quick",
+        json={"file_path": "incoming/small.csv", "interpret": False},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["status"] == "completed"
+    assert payload["interpretation"] == {"status": "skipped"}
+    sources = {card["finding_id"]: card["source"] for card in payload["dashboard"]["cards"]}
+    assert sources == {
+        "profile.shape.rows": "deterministic_dataframe_shape",
+        "profile.shape.columns": "deterministic_dataframe_shape",
+        "profile.quality.missing_cells": "dataframe_isna_sum",
+        "profile.quality.exact_duplicate_copies": "dataframe_duplicated_keep_first",
+        "profile.quality.score_heuristic": "documented_screening_heuristic",
+    }
 
 
 def test_quick_interpretation_retries_models_without_think_option(tmp_path, monkeypatch):

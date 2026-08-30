@@ -9,6 +9,104 @@ from lacopilot.security import validate_local_model_name, validate_ollama_endpoi
 
 _FINDING_CITATION = re.compile(r"\[(profile\.[A-Za-z0-9_.-]+)\]")
 _NUMERIC_CLAIM = re.compile(r"(?<![\w.])[+-]?\d+(?:[.,]\d+)?(?:\s*%)?")
+_QUICK_CARD_FINDING_IDS = (
+    "profile.shape.rows",
+    "profile.shape.columns",
+    "profile.quality.missing_cells",
+    "profile.quality.exact_duplicate_copies",
+    "profile.quality.score_heuristic",
+)
+_ROLE_ORDER = ("numeric", "categorical", "datetime", "identifier", "text", "boolean")
+
+
+def build_quick_dashboard(profile: dict[str, Any]) -> dict[str, Any]:
+    """Build the deterministic UI contract for Quick mode.
+
+    Cards are selected by stable finding IDs, never by column order or display label.
+    The payload intentionally contains no raw rows or sample values.
+    """
+    finding_index = {
+        finding["finding_id"]: finding
+        for finding in profile.get("findings", [])
+        if isinstance(finding, dict) and isinstance(finding.get("finding_id"), str)
+    }
+    missing_card_ids = [
+        finding_id for finding_id in _QUICK_CARD_FINDING_IDS if finding_id not in finding_index
+    ]
+    if missing_card_ids:
+        raise ValueError(
+            "Quick dashboard için zorunlu finding kimlikleri eksik: " + ", ".join(missing_card_ids)
+        )
+
+    missing_finding_ids = {
+        finding.get("dimension", {}).get("column"): finding["finding_id"]
+        for finding in profile.get("findings", [])
+        if finding.get("finding_id", "").startswith("profile.quality.missing.column.")
+    }
+    missing_by_column = sorted(
+        (
+            {
+                "finding_id": missing_finding_ids[column],
+                "column": column,
+                "count": int(count),
+                "pct": float(profile.get("missing_pct", {}).get(column, 0.0)),
+            }
+            for column, count in profile.get("missing_count", {}).items()
+            if int(count) > 0 and column in missing_finding_ids
+        ),
+        key=lambda item: (-item["count"], item["column"].casefold()),
+    )
+    role_counts = [
+        {"role": role, "count": len(profile.get("roles", {}).get(role, []))}
+        for role in _ROLE_ORDER
+        if role in profile.get("roles", {})
+    ]
+    ingestion = profile.get("ingestion", {})
+    ingestion_summary = {
+        key: ingestion[key]
+        for key in ("format", "source_name", "size_bytes", "parser", "parser_version")
+        if key in ingestion
+    }
+    if "csv" in ingestion:
+        csv_meta = ingestion["csv"]
+        ingestion_summary["csv"] = {
+            key: csv_meta[key]
+            for key in (
+                "encoding",
+                "delimiter_name",
+                "decimal_separator",
+                "expected_columns",
+                "confidence",
+                "warnings",
+            )
+            if key in csv_meta
+        }
+    if "excel" in ingestion:
+        excel_meta = ingestion["excel"]
+        ingestion_summary["excel"] = {
+            key: excel_meta[key]
+            for key in ("selected_sheet", "header_row", "sheet_count")
+            if key in excel_meta
+        }
+
+    cards = [dict(finding_index[finding_id]) for finding_id in _QUICK_CARD_FINDING_IDS]
+    warnings = [
+        finding["warning"]
+        for finding in cards
+        if isinstance(finding.get("warning"), str) and finding["warning"]
+    ]
+    warnings.extend(str(note) for note in profile.get("notes", []) if note)
+    return {
+        "dashboard_version": 1,
+        "title": "Hızlı Veri Profili",
+        "cards": cards,
+        "missing_by_column": missing_by_column,
+        "role_counts": role_counts,
+        "constant_columns": list(profile.get("constant_columns", [])),
+        "ingestion": ingestion_summary,
+        "warnings": list(dict.fromkeys(warnings)),
+        "evidence_policy": "all_numeric_cards_bound_to_finding_id",
+    }
 
 
 def profile_digest(profile: dict[str, Any]) -> dict[str, Any]:
