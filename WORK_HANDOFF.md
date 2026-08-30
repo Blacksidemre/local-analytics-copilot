@@ -85,11 +85,14 @@ Hermetic interpretation bridge/UI     15 passed
 Analyst Excel report regression        11 passed
 Hermetic report bridge/proxy/UI         23 passed
 Analyst workbook visual sheet pass      PASS (4 sheets)
+LAC GitHub CI run 33321827080            PASS (Windows + Linux 3.11/3.12)
+Hermetic GitHub CI run 33322596930       PASS (bridge/UI + Windows Node 24 + live hybrid)
+Live hybrid CSV/XLSX contract            PASS (upload + Quick + Analyst + verified report)
 ```
 
-The full coverage run reached the unrelated statistics path and the Linux runner terminated while
-loading the native `polars` extension with `Bus error`. This is an environment/native-binary
-blocker, not a failing assertion in the changed Milestone 1 paths.
+The local workspace's native `polars` build still terminates with `Bus error`, but the branch's
+GitHub CI completed the full coverage suite successfully on Python 3.11 and 3.12. The failure is
+therefore isolated to this transient Linux runtime rather than the committed project state.
 
 Regression fixture contract, tested for CSV and XLSX:
 
@@ -131,8 +134,11 @@ duplicate rows including originals   16
   bounded local planner/verifier design in Milestone 3 is implemented and evaluated.
 - Live Qwen interpretation, Docker Desktop and Tauri-on-Windows were not available in this Linux
   workspace.
-- The full Python suite currently hits a native `polars` Bus error in this Linux workspace; the
-  changed ingestion, Qwen verifier, CSV/XLSX fixture and launcher tests pass independently.
+- GitHub's Windows runner verifies the LAC Python suite and Hermetic's Node 24 ESM launcher. It is
+  not evidence that the full Tauri desktop, local Ollama and Docker Desktop path passed on the
+  user's actual machine.
+- A live GitHub contract now checks out both integration branches and validates controlled CSV and
+  XLSX upload, Quick Dashboard evidence, Analyst verification and the verified Excel download.
 - TestClient emits one upstream Starlette/httpx deprecation warning; tests still pass.
 
 ## Next milestone action
