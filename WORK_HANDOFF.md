@@ -97,9 +97,10 @@ Analyst document report regression      14 passed
 Hermetic report bridge/proxy/UI         28 passed
 Analyst workbook visual sheet pass      PASS (4 sheets)
 Analyst PDF render/reopen pass           PASS (3-page controlled fixture)
-LAC suite excluding local polars crash   70 passed, 1 skipped, 1 deselected; 71.22% coverage
-LAC GitHub CI run 33335996547            PASS (Windows + Linux 3.11/3.12)
-Hermetic GitHub CI run 33324391154       PASS (bridge/UI + Node 24 + Tauri + live hybrid)
+LAC suite excluding local polars crash   77 passed, 1 skipped, 1 deselected
+Bounded Agent CSV/XLSX regression         7 passed
+LAC GitHub CI run 33336788010            PASS (Windows + Linux 3.11/3.12)
+Hermetic GitHub CI run 33336825162       PASS (bridge/UI + Node 24 + Tauri + live hybrid)
 Live hybrid CSV/XLSX contract            PASS (Quick + Analyst + verified XLSX/HTML/PDF)
 ```
 
@@ -129,12 +130,14 @@ duplicate rows including originals   16
 - `src/lacopilot/analyst_interpretation.py`
 - `src/lacopilot/analyst_report.py`
 - `src/lacopilot/analyst_document_reports.py`
+- `src/lacopilot/investigate_foundation.py`
 - `src/lacopilot/regression_fixture.py`
 - `src/lacopilot/app.py`
 - `src/lacopilot/tools/common.py`
 - `src/lacopilot/tools/data_tools.py`
 - `tests/test_ingestion_bridge.py`
 - `tests/test_analyst_pipeline.py`
+- `tests/test_investigate_foundation.py`
 - `scripts/launch_windows.ps1`
 - `Start_Local_Analytics_Copilot.cmd`
 - `integrations/hermetic/lac-bridge-client.ts`
@@ -162,9 +165,15 @@ duplicate rows including originals   16
 
 ## Next milestone action
 
-Milestone 2's deterministic Analyst/browser contract is frozen. Begin only the bounded Milestone 3
-planner/executor/verifier foundation; keep company KPI selection blocked until an approved
-definition is supplied and do not enable arbitrary Python/shell execution.
+Milestone 2's deterministic Analyst/browser contract is frozen. A non-routable Milestone 3
+foundation now defines strict local-planner schemas, user-approved target semantics, two
+allowlisted deterministic tools, six-step/two-failure budgets, dependency and duplicate-call
+guards, goal completion, independent profile/Analyst/run verification, no-raw-row evidence and a
+48-finding tool-less synthesis reserve. CSV and XLSX execute the same bounded contract.
+
+Next, connect local Ollama only through this parser and build adversarial planner/synthesis evals.
+Keep Agent UI/API disabled until those evals pass; keep company KPI selection blocked until an
+approved definition is supplied and never enable arbitrary Python/shell execution.
 
 ## Acceptance still required on Windows
 
