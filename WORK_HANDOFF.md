@@ -59,8 +59,13 @@ The first bounded Analyst vertical slice is implemented:
 - Local Qwen receives only the bounded top-card Analyst digest, never raw rows. Numeric statements
   must cite matching Analyst findings; unsupported causal, predictive, significance, risk and
   business-importance claims are rejected and hidden from the UI.
-- Analyst report generation remains deferred; the verified finding manifest is now its
-  authoritative input.
+- A verified Analyst Excel report is now generated from that manifest with four sheets:
+  `Executive Dashboard`, `Associations`, `Evidence`, and `Methodology`. Dashboard values are
+  direct formulas into the Evidence sheet; raw rows are never exported.
+- The backend reopens every generated report and rejects it if sheets, finding values/sources,
+  formulas, cached formula values, error cells, or external-link checks fail.
+- Hermetic exposes the report as a one-click verified `.xlsx` download through the loopback-only
+  bridge proxy.
 
 ## Validation
 
@@ -77,6 +82,9 @@ Hermetic Analyst bridge/UI Vitest     16 passed
 Hermetic TypeScript + ESLint          PASS
 Analyst interpretation regression     8 passed
 Hermetic interpretation bridge/UI     15 passed
+Analyst Excel report regression        11 passed
+Hermetic report bridge/proxy/UI         23 passed
+Analyst workbook visual sheet pass      PASS (4 sheets)
 ```
 
 The full coverage run reached the unrelated statistics path and the Linux runner terminated while
@@ -103,6 +111,7 @@ duplicate rows including originals   16
 - `src/lacopilot/quick_analysis.py`
 - `src/lacopilot/analyst_pipeline.py`
 - `src/lacopilot/analyst_interpretation.py`
+- `src/lacopilot/analyst_report.py`
 - `src/lacopilot/regression_fixture.py`
 - `src/lacopilot/app.py`
 - `src/lacopilot/tools/common.py`
@@ -130,8 +139,9 @@ duplicate rows including originals   16
 
 Continue Milestone 2 without starting Agent work:
 
-1. Build Analyst dashboard/report output from the verified finding manifest.
-2. Reopen the generated output and validate sheets, formulas, card sources and error cells.
+1. Run the one-click Analyst report download on the user's actual Windows/Tauri environment and
+   open the result in desktop Excel.
+2. After that acceptance, add PDF/HTML output from the same verified finding manifest.
 3. Keep company KPI selection blocked until an approved definition is supplied.
 
 ## Acceptance still required on Windows

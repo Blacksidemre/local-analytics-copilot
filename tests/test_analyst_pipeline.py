@@ -1,10 +1,12 @@
 import sys
+from io import BytesIO
 from pathlib import Path
 from types import SimpleNamespace
 
 import pandas as pd
 import pytest
 from fastapi.testclient import TestClient
+from openpyxl import load_workbook
 
 from lacopilot.analyst_interpretation import (
     analyst_digest,
@@ -12,6 +14,11 @@ from lacopilot.analyst_interpretation import (
     verify_analyst_interpretation,
 )
 from lacopilot.analyst_pipeline import run_analyst_pipeline, verify_analyst_payload
+from lacopilot.analyst_report import (
+    REPORT_SHEETS,
+    create_analyst_excel_report,
+    validate_analyst_excel_report,
+)
 from lacopilot.app import app
 from lacopilot.config import get_settings
 from lacopilot.regression_fixture import write_credit_risk_regression_fixture
@@ -268,3 +275,95 @@ def test_analyst_pipeline_hides_rejected_local_model_text(tmp_path, monkeypatch)
     assert payload["interpretation"]["status"] == "rejected"
     assert "text" not in payload["interpretation"]
     assert payload["interpretation"]["verification"]["status"] == "needs_review"
+
+
+def test_analyst_excel_report_reopens_with_finding_bound_formulas(tmp_path, monkeypatch):
+    settings = configure(tmp_path, monkeypatch)
+    pd.DataFrame(
+        {
+            "target": [0] * 12 + [1] * 12,
+            "predictor": list(range(24)),
+            "raw_secret": [f"never-export-{index}" for index in range(24)],
+        }
+    ).to_csv(settings.incoming_dir / "report.csv", index=False)
+    payload = run_analyst_pipeline("incoming/report.csv", "target", predictor_columns=["predictor"])
+
+    result = create_analyst_excel_report(payload, "verified_analyst.xlsx")
+    output = settings.workspace / result["output"]
+    formula_book = load_workbook(output, data_only=False)
+    value_book = load_workbook(output, data_only=True)
+
+    assert result["verification"]["status"] == "passed"
+    assert result["verification"]["error_cells"] == []
+    assert result["verification"]["external_links"] == []
+    assert formula_book.sheetnames == REPORT_SHEETS
+    assert formula_book["Executive Dashboard"]["E8"].value == "='Evidence'!$D$2"
+    effect_id = payload["analyses"][0]["finding_ids"]["effect"]
+    effect = _finding_values(payload)[effect_id]
+    assert value_book["Executive Dashboard"]["E8"].value == pytest.approx(effect)
+    all_text = " ".join(
+        str(cell.value)
+        for sheet in formula_book.worksheets
+        for row in sheet.iter_rows()
+        for cell in row
+        if cell.value is not None
+    )
+    assert "never-export" not in all_text
+
+    formula_book["Executive Dashboard"]["E8"] = "=1/0"
+    formula_book.save(output)
+    tampered = validate_analyst_excel_report(output, payload)
+    assert tampered["status"] == "failed"
+    assert "invalid_formula_reference" in {error["code"] for error in tampered["errors"]}
+
+    formula_book.remove(formula_book["Evidence"])
+    formula_book.save(output)
+    missing_evidence = validate_analyst_excel_report(output, payload)
+    assert missing_evidence["status"] == "failed"
+    assert "invalid_sheet_contract" in {error["code"] for error in missing_evidence["errors"]}
+
+
+def test_analyst_excel_report_treats_formula_like_column_as_text(tmp_path, monkeypatch):
+    settings = configure(tmp_path, monkeypatch)
+    pd.DataFrame({"target": [0] * 12 + [1] * 12, "=2+2": list(range(24))}).to_csv(
+        settings.incoming_dir / "formula-name.csv", index=False
+    )
+    payload = run_analyst_pipeline(
+        "incoming/formula-name.csv", "target", predictor_columns=["=2+2"]
+    )
+
+    result = create_analyst_excel_report(payload, "safe_formula_name.xlsx")
+    workbook = load_workbook(settings.workspace / result["output"], data_only=False)
+
+    assert workbook["Associations"]["C2"].value == "=2+2"
+    assert workbook["Associations"]["C2"].data_type == "s"
+
+
+def test_analyst_report_api_returns_only_a_verified_xlsx(tmp_path, monkeypatch):
+    settings = configure(tmp_path, monkeypatch)
+    pd.DataFrame({"target": [0] * 12 + [1] * 12, "predictor": list(range(24))}).to_csv(
+        settings.incoming_dir / "api-report.csv", index=False
+    )
+    client = TestClient(app)
+
+    response = client.post(
+        "/api/v1/analysis/analyst/report",
+        json={
+            "file_path": "incoming/api-report.csv",
+            "target_column": "target",
+            "predictor_columns": ["predictor"],
+            "interpret": False,
+            "output_name": "../api_verified.xlsx",
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith(
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    )
+    assert response.headers["x-lac-report-verification"] == "passed"
+    assert "api_verified.xlsx" in response.headers["content-disposition"]
+    workbook = load_workbook(BytesIO(response.content), data_only=False)
+    assert workbook.sheetnames == REPORT_SHEETS
+    assert (settings.outputs_dir / "api_verified.xlsx").is_file()
+    assert not (tmp_path / "api_verified.xlsx").exists()

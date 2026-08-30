@@ -6,12 +6,13 @@ from typing import Literal
 
 from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from pydantic import BaseModel, Field
 
 from lacopilot import __version__
 from lacopilot.actions import ActionStore
 from lacopilot.analyst_pipeline import run_analyst_pipeline
+from lacopilot.analyst_report import create_analyst_excel_report
 from lacopilot.audit import audit
 from lacopilot.config import get_settings
 from lacopilot.conversations import ConversationStore
@@ -95,6 +96,10 @@ class AnalystAnalysisRequest(DatasetProfileRequest):
     question: str = Field(default="", max_length=20_000)
     language: str = Field(default="tr", max_length=16)
     model: str | None = Field(default=None, max_length=200)
+
+
+class AnalystReportRequest(AnalystAnalysisRequest):
+    output_name: str = Field(default="analyst_report.xlsx", min_length=1, max_length=200)
 
 
 class KnowledgeIngestRequest(BaseModel):
@@ -376,6 +381,49 @@ def analyst_analysis(req: AnalystAnalysisRequest):
         raise HTTPException(
             status_code=422,
             detail={"code": "invalid_analysis_request", "message": str(exc)},
+        ) from exc
+
+
+@app.post("/api/v1/analysis/analyst/report")
+def analyst_report(req: AnalystReportRequest):
+    try:
+        payload = run_analyst_pipeline(
+            req.file_path,
+            req.target_column,
+            sheet_name=req.sheet_name,
+            target_kind=req.target_kind,
+            predictor_columns=req.predictor_columns,
+            interpret=req.interpret,
+            question=req.question,
+            language=req.language,
+            model=req.model,
+        )
+        report = create_analyst_excel_report(payload, output_name=req.output_name)
+        settings = get_settings()
+        output = resolve_workspace_path(settings.workspace, report["output"])
+        verification = report["verification"]
+        return FileResponse(
+            output,
+            media_type=report["media_type"],
+            filename=report["filename"],
+            headers={
+                "X-LAC-Report-Schema": report["schema_version"],
+                "X-LAC-Report-Verification": verification["status"],
+                "X-LAC-Report-Findings": str(verification["finding_count"]),
+                "X-LAC-Report-Cards": str(verification["dashboard_card_count"]),
+            },
+        )
+    except IngestionError as exc:
+        raise HTTPException(status_code=422, detail=exc.as_dict()) from exc
+    except (FileNotFoundError, KeyError, PermissionError, ValueError) as exc:
+        raise HTTPException(
+            status_code=422,
+            detail={"code": "invalid_report_request", "message": str(exc)},
+        ) from exc
+    except RuntimeError as exc:
+        raise HTTPException(
+            status_code=500,
+            detail={"code": "report_verification_failed", "message": str(exc)},
         ) from exc
 
 
