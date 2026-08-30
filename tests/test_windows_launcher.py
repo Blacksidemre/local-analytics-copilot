@@ -1,3 +1,4 @@
+import codecs
 import shutil
 import subprocess
 from pathlib import Path
@@ -7,10 +8,11 @@ import pytest
 ROOT = Path(__file__).resolve().parents[1]
 LAUNCHER = ROOT / "scripts" / "launch_windows.ps1"
 CMD = ROOT / "Start_Local_Analytics_Copilot.cmd"
+POWERSHELL = shutil.which("powershell.exe") or shutil.which("pwsh")
 
 
 def test_windows_launcher_probes_expected_native_failures_without_fatal_exit():
-    script = LAUNCHER.read_text(encoding="utf-8")
+    script = LAUNCHER.read_text(encoding="utf-8-sig")
 
     assert "function Test-NativeCommand" in script
     assert (
@@ -23,7 +25,9 @@ def test_windows_launcher_probes_expected_native_failures_without_fatal_exit():
 
 
 def test_windows_launchers_enable_utf8_for_console_and_python():
-    script = LAUNCHER.read_text(encoding="utf-8")
+    raw_script = LAUNCHER.read_bytes()
+    assert raw_script.startswith(codecs.BOM_UTF8)
+    script = raw_script.decode("utf-8-sig")
     command = CMD.read_text(encoding="utf-8")
 
     assert "[Console]::OutputEncoding = $Utf8NoBom" in script
@@ -32,22 +36,32 @@ def test_windows_launchers_enable_utf8_for_console_and_python():
     assert "chcp 65001 >nul" in command
     assert 'set "PYTHONUTF8=1"' in command
     assert 'set "PYTHONIOENCODING=utf-8"' in command
+    assert "Ollama hazır" in script
+    assert "Docker Desktop kapalı" in script
+    assert "Quick analiz çalışır" in script
+    assert "hazÄ±r" not in script
+    assert "kapalÄ±" not in script
+    assert "Ã§alÄ±ÅŸÄ±r" not in script
 
 
-@pytest.mark.skipif(shutil.which("pwsh") is None, reason="PowerShell is not installed")
-def test_windows_launcher_has_valid_powershell_syntax():
+@pytest.mark.skipif(POWERSHELL is None, reason="PowerShell is not installed")
+def test_windows_powershell_parses_utf8_source_and_syntax():
     escaped = str(LAUNCHER).replace("'", "''")
     result = subprocess.run(
         [
-            "pwsh",
+            POWERSHELL,
             "-NoLogo",
             "-NoProfile",
             "-Command",
             (
-                "$errors=$null; "
+                "$tokens=$null; $errors=$null; "
                 f"[System.Management.Automation.Language.Parser]::ParseFile('{escaped}',"
-                "[ref]$null,[ref]$errors) > $null; "
-                "if ($errors.Count) { $errors | Out-String | Write-Error; exit 1 }"
+                "[ref]$tokens,[ref]$errors) > $null; "
+                "if ($errors.Count) { $errors | Out-String | Write-Error; exit 1 }; "
+                '$tokenText=($tokens | ForEach-Object { $_.Text }) -join "`n"; '
+                "if ($tokenText -notlike '*Ollama hazır*' -or "
+                "$tokenText -notlike '*Docker Desktop kapalı*' -or "
+                "$tokenText -notlike '*Quick analiz çalışır*') { exit 2 }"
             ),
         ],
         check=False,
