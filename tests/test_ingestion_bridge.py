@@ -126,6 +126,7 @@ def test_credit_risk_regression_fixture_contract(tmp_path, monkeypatch, kind):
     assert profile["rows"] == 1508
     assert profile["columns"] == 22
     assert profile["total_missing_cells"] == 52
+    assert profile["missing_cell_pct"] == pytest.approx(0.1567)
     assert profile["missing_count"]["monthly_income_try"] == 24
     assert profile["missing_count"]["payment_ratio_3m"] == 12
     assert profile["missing_count"]["employment_years"] == 16
@@ -138,21 +139,27 @@ def test_credit_risk_regression_fixture_contract(tmp_path, monkeypatch, kind):
     assert cards["profile.shape.columns"]["value"] == 22
     assert cards["profile.quality.missing_cells"]["value"] == 52
     assert cards["profile.quality.exact_duplicate_copies"]["value"] == 8
+    findings = {finding["finding_id"]: finding for finding in profile["findings"]}
+    assert findings["profile.quality.missing_cell_rate"]["value"] == pytest.approx(0.1567)
+    assert findings["profile.quality.duplicate_group_rows"]["value"] == 16
     assert dashboard["missing_by_column"] == [
         {
             "finding_id": "profile.quality.missing.column.6",
+            "pct_finding_id": "profile.quality.missing_pct.column.6",
             "column": "monthly_income_try",
             "count": 24,
             "pct": 1.59,
         },
         {
             "finding_id": "profile.quality.missing.column.7",
+            "pct_finding_id": "profile.quality.missing_pct.column.7",
             "column": "employment_years",
             "count": 16,
             "pct": 1.06,
         },
         {
             "finding_id": "profile.quality.missing.column.12",
+            "pct_finding_id": "profile.quality.missing_pct.column.12",
             "column": "payment_ratio_3m",
             "count": 12,
             "pct": 0.8,
@@ -250,8 +257,12 @@ def test_quick_interpretation_prompt_contains_facts_not_raw_rows(tmp_path, monke
     messages = build_interpretation_messages(profile, "Veri kalitesi nasıl?")
     digest = profile_digest(profile)
 
-    assert digest["total_missing_cells"] == 1
+    evidence = {finding["finding_id"]: finding for finding in digest["evidence"]}
+    assert evidence["profile.quality.missing_cells"]["value"] == 1
+    assert evidence["profile.quality.missing_cell_rate"]["unit"] == "percent_of_all_cells"
     assert "profile.quality.missing_cells" in messages[1]["content"]
+    assert "NEVER add column-level missing percentages" in messages[0]["content"]
+    assert 'explicitly say "belirlenemiyor"' in messages[0]["content"]
     assert "C1" not in messages[1]["content"]
     assert "C2" not in messages[1]["content"]
 
@@ -273,6 +284,7 @@ def test_quick_dashboard_is_deterministic_and_contains_no_raw_rows(tmp_path, mon
     assert dashboard["missing_by_column"] == [
         {
             "finding_id": "profile.quality.missing.column.1",
+            "pct_finding_id": "profile.quality.missing_pct.column.1",
             "column": "amount",
             "count": 2,
             "pct": 66.67,
@@ -335,6 +347,112 @@ def test_quick_interpretation_retries_models_without_think_option(tmp_path, monk
     assert result["evidence_finding_ids"] == ["profile.shape.rows"]
     assert verify_interpretation("Satır sayısı 2.", profile)["status"] == "needs_review"
     assert FakeClient.calls == 2
+
+
+def test_interpretation_contract_rejects_duplicate_missing_and_binary_semantic_errors(
+    tmp_path, monkeypatch
+):
+    settings = configure(tmp_path, monkeypatch)
+    paths = write_credit_risk_regression_fixture(settings.incoming_dir)
+    profile = profile_dataset(f"incoming/{paths['csv'].name}")
+    digest = profile_digest(profile)
+
+    binary_columns = {item["column"]: item for item in digest["binary_columns"]}
+    assert binary_columns["default_next_30d"] == {
+        "column": "default_next_30d",
+        "classification": "binary_observed_values",
+        "technical_role": "numeric",
+        "business_meaning": "unknown_without_approved_metadata",
+        "probability_interpretation_supported": False,
+    }
+
+    wrong_duplicate = (
+        "Duplicate gruplarında 16 satır kaldırılmalı [profile.quality.duplicate_group_rows]."
+    )
+    duplicate_check = verify_interpretation(wrong_duplicate, profile)
+    assert duplicate_check["status"] == "needs_review"
+    assert {item["code"] for item in duplicate_check["semantic_violations"]} == {
+        "duplicate_group_rows_used_as_removal_count"
+    }
+
+    wrong_missing = (
+        "monthly_income_try için %1,59 [profile.quality.missing_pct.column.6] ve "
+        "employment_years için %1,06 [profile.quality.missing_pct.column.7] olduğundan "
+        "toplam eksik veri oranı %2,65'tir."
+    )
+    missing_check = verify_interpretation(wrong_missing, profile)
+    assert missing_check["status"] == "needs_review"
+    assert missing_check["numeric_evidence_mismatches"]
+    assert {item["code"] for item in missing_check["semantic_violations"]} == {
+        "column_missing_percentages_used_as_overall_rate"
+    }
+
+    wrong_binary = "default_next_30d, 30 gün içinde varsayılan olma olasılığı tahminidir."
+    binary_check = verify_interpretation(wrong_binary, profile)
+    assert binary_check["status"] == "needs_review"
+    assert {item["code"] for item in binary_check["semantic_violations"]} == {
+        "unsupported_binary_business_semantics"
+    }
+    unsupported_target = verify_interpretation(
+        "default_next_30d ikili bir hedef sütunudur ama olasılık değildir.", profile
+    )
+    assert unsupported_target["status"] == "needs_review"
+    assert unsupported_target["semantic_violations"][0]["code"] == (
+        "unsupported_binary_business_semantics"
+    )
+
+
+def test_interpretation_contract_accepts_bound_facts_and_explicit_unknown_semantics(
+    tmp_path, monkeypatch
+):
+    settings = configure(tmp_path, monkeypatch)
+    paths = write_credit_risk_regression_fixture(settings.incoming_dir)
+    profile = profile_dataset(f"incoming/{paths['csv'].name}")
+    text = "\n".join(
+        [
+            "Fazladan duplicate kopya sayısı 8 [profile.quality.exact_duplicate_copies].",
+            "Duplicate gruplarında orijinaller dahil 16 satır bulunur [profile.quality.duplicate_group_rows].",
+            "Tüm hücrelerde eksik oranı %0,1567 [profile.quality.missing_cell_rate].",
+            "default_next_30d ikili bir sütundur; iş anlamı profilden belirlenemiyor.",
+        ]
+    )
+
+    check = verify_interpretation(text, profile)
+
+    assert check["status"] == "passed"
+    assert check["numeric_evidence_mismatches"] == []
+    assert check["semantic_violations"] == []
+
+
+def test_interpret_profile_hides_model_text_that_fails_semantic_verification(tmp_path, monkeypatch):
+    settings = configure(tmp_path, monkeypatch)
+    paths = write_credit_risk_regression_fixture(settings.incoming_dir)
+    profile = profile_dataset(f"incoming/{paths['csv'].name}")
+
+    class FakeClient:
+        def __init__(self, **_kwargs):
+            pass
+
+        def chat(self, **_kwargs):
+            return SimpleNamespace(
+                message=SimpleNamespace(
+                    content=(
+                        "Duplicate gruplarında 16 satır kaldırılmalı "
+                        "[profile.quality.duplicate_group_rows]."
+                    )
+                )
+            )
+
+    monkeypatch.setitem(sys.modules, "ollama", SimpleNamespace(Client=FakeClient))
+
+    result = interpret_profile(profile)
+
+    assert result["status"] == "rejected"
+    assert "text" not in result
+    assert result["verification"]["status"] == "needs_review"
+    assert result["verification"]["semantic_violations"][0]["code"] == (
+        "duplicate_group_rows_used_as_removal_count"
+    )
 
 
 def test_empty_dataset_profile_reports_zero_total_cells(tmp_path, monkeypatch):

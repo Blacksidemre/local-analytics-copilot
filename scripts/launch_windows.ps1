@@ -5,6 +5,15 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+if (Get-Variable PSNativeCommandUseErrorActionPreference -ErrorAction SilentlyContinue) {
+  $PSNativeCommandUseErrorActionPreference = $false
+}
+$Utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+[Console]::InputEncoding = $Utf8NoBom
+[Console]::OutputEncoding = $Utf8NoBom
+$OutputEncoding = $Utf8NoBom
+$env:PYTHONUTF8 = "1"
+$env:PYTHONIOENCODING = "utf-8"
 $RepoRoot = Split-Path -Parent $PSScriptRoot
 Set-Location $RepoRoot
 $LogDirectory = Join-Path $RepoRoot "workspace\logs"
@@ -34,6 +43,25 @@ function Test-LacBackend([string]$BaseUrl, [int]$TimeoutSeconds = 2) {
   }
 }
 
+function Test-NativeCommand {
+  param(
+    [Parameter(Mandatory = $true)][string]$Executable,
+    [string[]]$Arguments = @()
+  )
+  $PreviousErrorActionPreference = $ErrorActionPreference
+  try {
+    # A probe is allowed to return non-zero. PowerShell 7 can otherwise promote native stderr
+    # to a terminating error before the caller can inspect LASTEXITCODE.
+    $ErrorActionPreference = "Continue"
+    & $Executable @Arguments *> $null
+    return $LASTEXITCODE -eq 0
+  } catch {
+    return $false
+  } finally {
+    $ErrorActionPreference = $PreviousErrorActionPreference
+  }
+}
+
 function Find-CompatiblePython {
   $Candidates = @(
     @{ Exe = "py"; Prefix = @("-3.12") },
@@ -43,12 +71,12 @@ function Find-CompatiblePython {
   )
   foreach ($Candidate in $Candidates) {
     if (-not (Get-Command $Candidate.Exe -ErrorAction SilentlyContinue)) { continue }
-    try {
-      $Executable = [string]$Candidate.Exe
-      $Prefix = @($Candidate.Prefix)
-      & $Executable @Prefix -c "import sys; raise SystemExit(0 if (3, 11) <= sys.version_info[:2] < (3, 14) else 1)"
-      if ($LASTEXITCODE -eq 0) { return $Candidate }
-    } catch { }
+    $Executable = [string]$Candidate.Exe
+    $Arguments = @($Candidate.Prefix) + @(
+      "-c",
+      "import sys; raise SystemExit(0 if (3, 11) <= sys.version_info[:2] < (3, 14) else 1)"
+    )
+    if (Test-NativeCommand -Executable $Executable -Arguments $Arguments) { return $Candidate }
   }
   return $null
 }
@@ -67,8 +95,7 @@ try {
     if ($LASTEXITCODE -ne 0) { throw "Python sanal ortamı oluşturulamadı." }
   }
 
-  & $VenvPython -c "import lacopilot" 2>$null
-  if ($LASTEXITCODE -ne 0) {
+  if (-not (Test-NativeCommand -Executable $VenvPython -Arguments @("-c", "import lacopilot"))) {
     Write-Step "Uygulama bağımlılıkları ilk kez kuruluyor..."
     & $VenvPython -m pip install --upgrade pip
     & $VenvPython -m pip install -e ".[all]"
@@ -95,8 +122,7 @@ try {
 
   if (-not $SkipDockerCheck) {
     if (Get-Command "docker" -ErrorAction SilentlyContinue) {
-      & docker info *> $null
-      if ($LASTEXITCODE -eq 0) {
+      if (Test-NativeCommand -Executable "docker" -Arguments @("info")) {
         Write-Host "[OK] Docker hazır" -ForegroundColor Green
       } else {
         Write-Host "[UYARI] Docker Desktop kapalı. Quick analiz çalışır; sandbox gerektiren hibrit analiz çalışmaz." -ForegroundColor Yellow

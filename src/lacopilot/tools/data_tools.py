@@ -152,6 +152,7 @@ def profile_dataset(file_path: str, sheet_name: str = "0") -> dict:
     quality_denominator = max(total_cells, 1)
     total_missing = int(df.isna().sum().sum())
     missing_rate = float(total_missing) / quality_denominator
+    missing_cell_pct = round(missing_rate * 100, 4)
     duplicate_rate = duplicate_rows / row_denominator
     constant = [str(c) for c in df.columns if df[c].nunique(dropna=False) <= 1]
     quality_score = 100.0
@@ -196,6 +197,14 @@ def profile_dataset(file_path: str, sheet_name: str = "0") -> dict:
             "source": "dataframe_isna_sum",
         },
         {
+            "finding_id": "profile.quality.missing_cell_rate",
+            "kind": "metric",
+            "label": "Tüm hücrelerde eksik oranı",
+            "value": missing_cell_pct,
+            "unit": "percent_of_all_cells",
+            "source": "total_missing_cells_divided_by_rows_times_columns",
+        },
+        {
             "finding_id": "profile.quality.exact_duplicate_copies",
             "kind": "metric",
             "label": "Tam duplicate kopya",
@@ -234,12 +243,26 @@ def profile_dataset(file_path: str, sheet_name: str = "0") -> dict:
         for index, column in enumerate(df.columns)
         if int(missing[column]) > 0
     )
+    findings.extend(
+        {
+            "finding_id": f"profile.quality.missing_pct.column.{index}",
+            "kind": "metric",
+            "label": f"{column} eksik oranı",
+            "value": float(missing_pct[column]),
+            "unit": "percent_of_column_rows",
+            "source": "column_isna_mean",
+            "dimension": {"column": str(column)},
+        }
+        for index, column in enumerate(df.columns)
+        if int(missing[column]) > 0
+    )
     result = {
         "profile_version": 2,
         "rows": rows,
         "columns": columns,
         "total_cells": int(total_cells),
         "total_missing_cells": total_missing,
+        "missing_cell_pct": missing_cell_pct,
         "roles": roles,
         "schema": schema,
         "unique_counts": {str(c): int(df[c].nunique(dropna=True)) for c in df.columns},
@@ -261,6 +284,8 @@ def profile_dataset(file_path: str, sheet_name: str = "0") -> dict:
             "Quality score is a screening heuristic, not an audit opinion.",
             "Outliers are flagged for review; they are not automatically removed.",
             "Identifier columns are excluded from most numeric analysis recommendations.",
+            "Exact duplicate copies exclude one retained original per duplicate group; rows including originals are not a removal count.",
+            "Column-level missing percentages have separate denominators and must not be summed as a dataset-wide missing rate.",
         ],
     }
     audit(

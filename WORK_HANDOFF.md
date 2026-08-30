@@ -24,8 +24,16 @@ Milestone 1 backend/bridge slice is implemented:
 - CSV and XLSX regression fixtures now verify the same dashboard card and missing-column contract.
 - Hermetic bridge errors normalize to `{ code, message, hint, details }` for typed UI handling.
 - Quick mode can ask local Ollama to interpret a bounded profile digest without raw rows and reports
-  citation-presence verification separately from analytical validation.
+  numeric-evidence and semantic verification separately from deterministic analytics.
+- Dataset-wide missing rate and every column-level missing percentage have separate stable finding
+  IDs; column percentages cannot be added and presented as a dataset-wide rate.
+- Duplicate-copy removal count is explicitly separated from duplicate-group rows including
+  originals. Binary columns carry no inferred target/probability/business meaning.
+- Qwen text that fails numeric binding or the duplicate/missing/binary semantic guardrails is
+  rejected and is not returned to the UI as trusted interpretation.
 - Windows double-click launcher supports `py -3.12` when the `python` alias is broken.
+- Windows native probes now allow expected non-zero results, Docker-off is a warning, and console
+  plus Python subprocess output are configured for UTF-8.
 - Hermetic adapter client and integration sequence live under `integrations/hermetic/`.
 
 ## Validation
@@ -34,11 +42,15 @@ Milestone 1 backend/bridge slice is implemented:
 ruff format --check .                 PASS
 ruff check .                          PASS
 python -m compileall -q src scripts   PASS
-pytest --cov=lacopilot -q             51 passed, 66.64%
+pytest ingestion+launcher -q          20 passed, 1 skipped (pwsh absent)
 node --check lac-bridge-client.ts     PASS
 bridge client runtime smoke           PASS
 git diff --check                      PASS
 ```
+
+The full coverage run reached the unrelated statistics path and the Linux runner terminated while
+loading the native `polars` extension with `Bus error`. This is an environment/native-binary
+blocker, not a failing assertion in the changed Milestone 1 paths.
 
 Regression fixture contract, tested for CSV and XLSX:
 
@@ -69,25 +81,26 @@ duplicate rows including originals   16
 
 ## Known limits / blockers
 
-- The new PowerShell launcher was statically reviewed but must still be run on the user's actual
-  Windows 11 machine; Linux CI cannot prove Docker Desktop/Ollama process startup behavior.
-- Hermetic UI source is intentionally not copied into this repo. Create/use the planned
-  `Blacksidemre/hermetic` fork and wire its upload/Quick flow through the bridge client.
+- The PowerShell launcher behavior is regression-tested statically but must still be run on the
+  user's actual Windows 11 machine; `pwsh` is unavailable in this Linux workspace.
+- Hermetic upload/Quick UI is wired on `Blacksidemre/hermetic: lac-data-bridge-integration`.
 - Hermetic local Investigate remains disabled upstream. Do not remove its provider gate until the
   bounded local planner/verifier design in Milestone 3 is implemented and evaluated.
-- Live Qwen interpretation and Docker sandbox were not available in this Linux workspace.
+- Live Qwen interpretation, Docker Desktop and Tauri-on-Windows were not available in this Linux
+  workspace.
+- The full Python suite currently hits a native `polars` Bus error in this Linux workspace; the
+  changed ingestion, Qwen verifier, CSV/XLSX fixture and launcher tests pass independently.
 - TestClient emits one upstream Starlette/httpx deprecation warning; tests still pass.
 
 ## Next milestone action
 
-Finish Milestone 1 end-to-end UI integration before starting Analyst/Agent work:
+Finish Milestone 1 before starting Analyst/Agent work:
 
-1. Fork/pin Hermetic at the inspected upstream revision.
-2. Replace its hybrid-mode upload/profile source with `LacBridgeClient`.
-3. Bind KPI cards to stable finding IDs and show typed ingestion errors in the UI.
-4. Package LAC as the Tauri Python sidecar using Hermetic's existing desktop build pattern.
-5. Run the real Windows acceptance path with both regression files and `qwen3.5:9b`.
-6. Only after that passes, begin Milestone 2 Analyst Pipeline.
+1. Pull both integration branches on the real Windows machine.
+2. Run the launcher with missing Python package state and Docker Desktop closed once.
+3. Start Hermetic with `pnpm desktop:dev` and confirm the platform-neutral Next runner.
+4. Re-run both regression files and `qwen3.5:9b` interpretation.
+5. Only after that passes, close Milestone 1; do not begin Milestone 2 yet.
 
 ## Acceptance still required on Windows
 
