@@ -11,6 +11,7 @@ from pydantic import BaseModel, Field
 
 from lacopilot import __version__
 from lacopilot.actions import ActionStore
+from lacopilot.analyst_pipeline import run_analyst_pipeline
 from lacopilot.audit import audit
 from lacopilot.config import get_settings
 from lacopilot.conversations import ConversationStore
@@ -84,6 +85,12 @@ class QuickAnalysisRequest(DatasetProfileRequest):
     interpret: bool = True
     language: str = Field(default="tr", max_length=16)
     model: str | None = Field(default=None, max_length=200)
+
+
+class AnalystAnalysisRequest(DatasetProfileRequest):
+    target_column: str = Field(min_length=1, max_length=200)
+    target_kind: Literal["binary", "continuous", "categorical"] | None = None
+    predictor_columns: list[str] | None = Field(default=None, max_length=50)
 
 
 class KnowledgeIngestRequest(BaseModel):
@@ -343,6 +350,25 @@ def quick_analysis(req: QuickAnalysisRequest):
             model=req.model,
         )
     return result
+
+
+@app.post("/api/v1/analysis/analyst")
+def analyst_analysis(req: AnalystAnalysisRequest):
+    try:
+        return run_analyst_pipeline(
+            req.file_path,
+            req.target_column,
+            sheet_name=req.sheet_name,
+            target_kind=req.target_kind,
+            predictor_columns=req.predictor_columns,
+        )
+    except IngestionError as exc:
+        raise HTTPException(status_code=422, detail=exc.as_dict()) from exc
+    except (FileNotFoundError, KeyError, PermissionError, ValueError) as exc:
+        raise HTTPException(
+            status_code=422,
+            detail={"code": "invalid_analysis_request", "message": str(exc)},
+        ) from exc
 
 
 @app.post("/api/chat")

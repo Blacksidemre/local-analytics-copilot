@@ -7,7 +7,9 @@ Last validated revision: the current branch HEAD containing this document
 
 ## Completed milestone
 
-Milestone 1 backend/bridge slice is implemented:
+Milestone 1 backend/bridge slice is implemented. The user chose to continue without rerunning the
+final Windows acceptance after the two launcher fixes; this is an explicit acceptance deferral, not
+evidence that Windows/Tauri E2E passed.
 
 - Hybrid boundary frozen in `docs/HYBRID_ARCHITECTURE.md`.
 - Hermetic upstream `04e4dca` inspected; current Tauri and XLSX/sheet-picker work is BORROW.
@@ -36,6 +38,27 @@ Milestone 1 backend/bridge slice is implemented:
   plus Python subprocess output are configured for UTF-8.
 - Hermetic adapter client and integration sequence live under `integrations/hermetic/`.
 
+## Milestone 2 current slice
+
+The first bounded Analyst vertical slice is implemented:
+
+- `POST /api/v1/analysis/analyst` requires an explicit target column.
+- Non-binary targets require an explicit statistical kind; column names never establish business
+  meaning.
+- Identifier, datetime and free-text fields are excluded from automatic predictor selection.
+- Binary, continuous and categorical target screens dispatch deterministic Mann-Whitney,
+  Spearman, Kruskal-Wallis, chi-square or Fisher tests as appropriate.
+- Raw p-values are adjusted together with Benjamini-Hochberg correction.
+- Effect, raw p-value, adjusted p-value and complete-case count each receive stable `finding_id`
+  evidence.
+- The Analyst verifier rejects duplicate/unknown findings, invalid numeric values, unbound cards,
+  invalid multiple-test correction and invented target/KPI semantics.
+- The Hermetic bridge revalidates the Analyst contract before rendering it.
+- The hybrid UI now lets the user explicitly select a target and target kind, then displays only
+  verifier-passed effect cards and method metadata.
+- Local-model explanation and report generation remain deferred; this slice establishes their
+  authoritative evidence input first.
+
 ## Validation
 
 ```text
@@ -46,6 +69,9 @@ pytest ingestion+launcher -q          20 passed, 1 skipped (pwsh absent)
 node --check lac-bridge-client.ts     PASS
 bridge client runtime smoke           PASS
 git diff --check                      PASS
+Analyst + ingestion regression        28 passed, 1 skipped (PowerShell absent)
+Hermetic Analyst bridge/UI Vitest     16 passed
+Hermetic TypeScript + ESLint          PASS
 ```
 
 The full coverage run reached the unrelated statistics path and the Linux runner terminated while
@@ -94,13 +120,12 @@ duplicate rows including originals   16
 
 ## Next milestone action
 
-Finish Milestone 1 before starting Analyst/Agent work:
+Continue Milestone 2 without starting Agent work:
 
-1. Pull both integration branches on the real Windows machine.
-2. Run the launcher with missing Python package state and Docker Desktop closed once.
-3. Start Hermetic with `pnpm desktop:dev` and confirm the platform-neutral Next runner.
-4. Re-run both regression files and `qwen3.5:9b` interpretation.
-5. Only after that passes, close Milestone 1; do not begin Milestone 2 yet.
+1. Add bounded local-Qwen explanation over Analyst findings only.
+2. Verify every numerical sentence against the Analyst finding manifest.
+3. Build Analyst dashboard/report output from the same findings, then reopen and validate it.
+4. Keep company KPI selection blocked until an approved definition is supplied.
 
 ## Acceptance still required on Windows
 
