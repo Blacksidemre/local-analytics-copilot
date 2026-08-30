@@ -2,7 +2,8 @@ from __future__ import annotations
 
 import hmac
 import uuid
-from typing import Literal
+from collections.abc import Callable
+from typing import Any, Literal
 
 from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
@@ -11,6 +12,10 @@ from pydantic import BaseModel, Field
 
 from lacopilot import __version__
 from lacopilot.actions import ActionStore
+from lacopilot.analyst_document_reports import (
+    create_analyst_html_report,
+    create_analyst_pdf_report,
+)
 from lacopilot.analyst_pipeline import run_analyst_pipeline
 from lacopilot.analyst_report import create_analyst_excel_report
 from lacopilot.audit import audit
@@ -100,6 +105,14 @@ class AnalystAnalysisRequest(DatasetProfileRequest):
 
 class AnalystReportRequest(AnalystAnalysisRequest):
     output_name: str = Field(default="analyst_report.xlsx", min_length=1, max_length=200)
+
+
+class AnalystHtmlReportRequest(AnalystAnalysisRequest):
+    output_name: str = Field(default="analyst_report.html", min_length=1, max_length=200)
+
+
+class AnalystPdfReportRequest(AnalystAnalysisRequest):
+    output_name: str = Field(default="analyst_report.pdf", min_length=1, max_length=200)
 
 
 class KnowledgeIngestRequest(BaseModel):
@@ -384,8 +397,11 @@ def analyst_analysis(req: AnalystAnalysisRequest):
         ) from exc
 
 
-@app.post("/api/v1/analysis/analyst/report")
-def analyst_report(req: AnalystReportRequest):
+def _verified_analyst_report_response(
+    req: AnalystAnalysisRequest,
+    output_name: str,
+    report_factory: Callable[[dict[str, Any], str], dict[str, Any]],
+) -> FileResponse:
     try:
         payload = run_analyst_pipeline(
             req.file_path,
@@ -398,7 +414,7 @@ def analyst_report(req: AnalystReportRequest):
             language=req.language,
             model=req.model,
         )
-        report = create_analyst_excel_report(payload, output_name=req.output_name)
+        report = report_factory(payload, output_name)
         settings = get_settings()
         output = resolve_workspace_path(settings.workspace, report["output"])
         verification = report["verification"]
@@ -425,6 +441,33 @@ def analyst_report(req: AnalystReportRequest):
             status_code=500,
             detail={"code": "report_verification_failed", "message": str(exc)},
         ) from exc
+
+
+@app.post("/api/v1/analysis/analyst/report")
+def analyst_report(req: AnalystReportRequest):
+    return _verified_analyst_report_response(
+        req,
+        req.output_name,
+        create_analyst_excel_report,
+    )
+
+
+@app.post("/api/v1/analysis/analyst/report/html")
+def analyst_html_report(req: AnalystHtmlReportRequest):
+    return _verified_analyst_report_response(
+        req,
+        req.output_name,
+        create_analyst_html_report,
+    )
+
+
+@app.post("/api/v1/analysis/analyst/report/pdf")
+def analyst_pdf_report(req: AnalystPdfReportRequest):
+    return _verified_analyst_report_response(
+        req,
+        req.output_name,
+        create_analyst_pdf_report,
+    )
 
 
 @app.post("/api/chat")

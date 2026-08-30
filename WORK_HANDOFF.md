@@ -66,6 +66,15 @@ The first bounded Analyst vertical slice is implemented:
   formulas, cached formula values, error cells, or external-link checks fail.
 - Hermetic exposes the report as a one-click verified `.xlsx` download through the loopback-only
   bridge proxy.
+- Self-contained HTML and PDF reports are generated from the same verifier-passed finding
+  manifest. Both formats include the stable finding IDs and a SHA-256 evidence-manifest binding;
+  neither format exports raw source rows or loads external resources.
+- HTML verification rejects missing sections, altered values/units/sources, scripts and external
+  links. PDF verification reopens the file, checks metadata, pages, evidence text, manifest hash,
+  file links and the target/KPI guardrails.
+- Hermetic now exposes verified Excel, HTML and PDF downloads. The bridge client independently
+  checks each response's schema, verification headers, safe filename extension, counts and binary
+  file signature before the browser can download it.
 
 ## Validation
 
@@ -83,11 +92,14 @@ Hermetic TypeScript + ESLint          PASS
 Analyst interpretation regression     8 passed
 Hermetic interpretation bridge/UI     15 passed
 Analyst Excel report regression        11 passed
-Hermetic report bridge/proxy/UI         23 passed
+Analyst document report regression      14 passed
+Hermetic report bridge/proxy/UI         28 passed
 Analyst workbook visual sheet pass      PASS (4 sheets)
+Analyst PDF render/reopen pass           PASS (3-page controlled fixture)
+LAC suite excluding local polars crash   69 passed, 1 skipped, 1 deselected; 71.12% coverage
 LAC GitHub CI run 33321827080            PASS (Windows + Linux 3.11/3.12)
 Hermetic GitHub CI run 33322855867       PASS (bridge/UI + Node 24 + Tauri + live hybrid)
-Live hybrid CSV/XLSX contract            PASS (upload + Quick + Analyst + verified report)
+Live hybrid CSV/XLSX contract            PASS (Quick + Analyst + verified XLSX/HTML/PDF)
 ```
 
 The local workspace's native `polars` build still terminates with `Bus error`, but the branch's
@@ -115,6 +127,7 @@ duplicate rows including originals   16
 - `src/lacopilot/analyst_pipeline.py`
 - `src/lacopilot/analyst_interpretation.py`
 - `src/lacopilot/analyst_report.py`
+- `src/lacopilot/analyst_document_reports.py`
 - `src/lacopilot/regression_fixture.py`
 - `src/lacopilot/app.py`
 - `src/lacopilot/tools/common.py`
@@ -137,17 +150,22 @@ duplicate rows including originals   16
 - GitHub's Windows runner verifies the LAC Python suite, Hermetic's Node 24 ESM launcher and that
   the Tauri Rust shell compiles. It is not evidence that the full desktop, local Ollama and Docker
   Desktop path passed interactively on the user's actual machine.
-- A live GitHub contract now checks out both integration branches and validates controlled CSV and
-  XLSX upload, Quick Dashboard evidence, Analyst verification and the verified Excel download.
+- A live contract checks both integration branches and validates controlled CSV/XLSX upload,
+  Quick Dashboard evidence, Analyst verification and verified Excel/HTML/PDF downloads.
 - TestClient emits one upstream Starlette/httpx deprecation warning; tests still pass.
+- The complete upstream Hermetic test/build chain was stopped in this workspace when an existing
+  test attempted to contact a cloud instance-metadata endpoint. No retry or bypass was attempted;
+  the changed bridge/proxy/UI files passed their 28 targeted tests, formatting, ESLint and
+  TypeScript checks without that access.
 
 ## Next milestone action
 
 Continue Milestone 2 without starting Agent work:
 
-1. Run the one-click Analyst report download on the user's actual Windows/Tauri environment and
-   open the result in desktop Excel.
-2. After that acceptance, add PDF/HTML output from the same verified finding manifest.
+1. On the user's actual Windows/Tauri environment, download and open the verified Excel, HTML and
+   PDF reports from one controlled Analyst run.
+2. Freeze Milestone 2 after that physical acceptance; do not begin Agent work before its separate
+   planner/executor/verifier acceptance contract is approved.
 3. Keep company KPI selection blocked until an approved definition is supplied.
 
 ## Acceptance still required on Windows

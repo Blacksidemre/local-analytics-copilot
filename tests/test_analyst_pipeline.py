@@ -7,7 +7,16 @@ import pandas as pd
 import pytest
 from fastapi.testclient import TestClient
 from openpyxl import load_workbook
+from pypdf import PdfReader, PdfWriter
 
+from lacopilot.analyst_document_reports import (
+    HTML_REPORT_SCHEMA_VERSION,
+    PDF_REPORT_SCHEMA_VERSION,
+    create_analyst_html_report,
+    create_analyst_pdf_report,
+    validate_analyst_html_report,
+    validate_analyst_pdf_report,
+)
 from lacopilot.analyst_interpretation import (
     analyst_digest,
     build_analyst_interpretation_messages,
@@ -339,6 +348,65 @@ def test_analyst_excel_report_treats_formula_like_column_as_text(tmp_path, monke
     assert workbook["Associations"]["C2"].data_type == "s"
 
 
+def test_analyst_html_and_pdf_reports_reopen_with_verified_evidence(tmp_path, monkeypatch):
+    settings = configure(tmp_path, monkeypatch)
+    pd.DataFrame(
+        {
+            "target": [0] * 12 + [1] * 12,
+            "predictor": list(range(24)),
+            "raw_secret": [f"never-export-{index}" for index in range(24)],
+        }
+    ).to_csv(settings.incoming_dir / "document-report.csv", index=False)
+    payload = run_analyst_pipeline(
+        "incoming/document-report.csv",
+        "target",
+        predictor_columns=["predictor"],
+    )
+
+    html_result = create_analyst_html_report(payload, "verified_analyst.html")
+    pdf_result = create_analyst_pdf_report(payload, "verified_analyst.pdf")
+    html_path = settings.workspace / html_result["output"]
+    pdf_path = settings.workspace / pdf_result["output"]
+    html_text = html_path.read_text(encoding="utf-8")
+    pdf_text = "\n".join(page.extract_text() or "" for page in PdfReader(pdf_path).pages)
+
+    assert html_result["schema_version"] == HTML_REPORT_SCHEMA_VERSION
+    assert pdf_result["schema_version"] == PDF_REPORT_SCHEMA_VERSION
+    assert html_result["verification"]["status"] == "passed"
+    assert pdf_result["verification"]["status"] == "passed"
+    assert pdf_result["verification"]["page_count"] >= 3
+    assert "never-export" not in html_text
+    assert "never-export" not in pdf_text
+    assert payload["findings"][0]["finding_id"] in html_text
+    assert payload["findings"][0]["finding_id"] in pdf_text.replace("\n", "")
+
+    first = payload["findings"][0]
+    evidence_prefix = f'data-finding-id="{first["finding_id"]}" data-value="'
+    value_start = html_text.index(evidence_prefix) + len(evidence_prefix)
+    value_end = html_text.index('"', value_start)
+    tampered_html = html_path.with_name("tampered.html")
+    tampered_html.write_text(
+        html_text[:value_start] + "999999" + html_text[value_end:],
+        encoding="utf-8",
+    )
+    html_verification = validate_analyst_html_report(tampered_html, payload)
+    assert html_verification["status"] == "failed"
+    assert "evidence_value_mismatch" in {error["code"] for error in html_verification["errors"]}
+
+    reader = PdfReader(pdf_path)
+    writer = PdfWriter()
+    writer.append_pages_from_reader(reader)
+    writer.add_metadata({"/Title": "Tampered", "/Subject": "invalid", "/Keywords": ""})
+    tampered_pdf = pdf_path.with_name("tampered.pdf")
+    with tampered_pdf.open("wb") as stream:
+        writer.write(stream)
+    pdf_verification = validate_analyst_pdf_report(tampered_pdf, payload)
+    assert pdf_verification["status"] == "failed"
+    assert {"invalid_pdf_title", "invalid_pdf_schema", "manifest_digest_mismatch"} <= {
+        error["code"] for error in pdf_verification["errors"]
+    }
+
+
 def test_analyst_report_api_returns_only_a_verified_xlsx(tmp_path, monkeypatch):
     settings = configure(tmp_path, monkeypatch)
     pd.DataFrame({"target": [0] * 12 + [1] * 12, "predictor": list(range(24))}).to_csv(
@@ -367,3 +435,57 @@ def test_analyst_report_api_returns_only_a_verified_xlsx(tmp_path, monkeypatch):
     assert workbook.sheetnames == REPORT_SHEETS
     assert (settings.outputs_dir / "api_verified.xlsx").is_file()
     assert not (tmp_path / "api_verified.xlsx").exists()
+
+
+@pytest.mark.parametrize(
+    ("route", "output_name", "content_type", "schema", "magic"),
+    [
+        (
+            "/api/v1/analysis/analyst/report/html",
+            "../api_verified.html",
+            "text/html",
+            HTML_REPORT_SCHEMA_VERSION,
+            b"<!doctype html>",
+        ),
+        (
+            "/api/v1/analysis/analyst/report/pdf",
+            "../api_verified.pdf",
+            "application/pdf",
+            PDF_REPORT_SCHEMA_VERSION,
+            b"%PDF-",
+        ),
+    ],
+)
+def test_analyst_document_report_api_returns_only_verified_files(
+    tmp_path,
+    monkeypatch,
+    route,
+    output_name,
+    content_type,
+    schema,
+    magic,
+):
+    settings = configure(tmp_path, monkeypatch)
+    pd.DataFrame({"target": [0] * 12 + [1] * 12, "predictor": list(range(24))}).to_csv(
+        settings.incoming_dir / "api-document-report.csv", index=False
+    )
+    response = TestClient(app).post(
+        route,
+        json={
+            "file_path": "incoming/api-document-report.csv",
+            "target_column": "target",
+            "predictor_columns": ["predictor"],
+            "interpret": False,
+            "output_name": output_name,
+        },
+    )
+
+    safe_name = Path(output_name).name
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith(content_type)
+    assert response.headers["x-lac-report-schema"] == schema
+    assert response.headers["x-lac-report-verification"] == "passed"
+    assert response.content.startswith(magic)
+    assert safe_name in response.headers["content-disposition"]
+    assert (settings.outputs_dir / safe_name).is_file()
+    assert not (tmp_path / safe_name).exists()
