@@ -7,6 +7,15 @@ Branch: `hermetic-hybrid-integration`
 Canonical repository: `Blacksidemre/local-analytics-copilot`
 Protected branches: `main` and upstream `achalp/hermetic` were not changed
 
+## Published integration checkpoints
+
+- Canonical single-repository consolidation checkpoint: `64c709d` on
+  `Blacksidemre/local-analytics-copilot:hermetic-hybrid-integration`.
+- Historical Hermetic UI checkpoint: `3fe0afb` on
+  `Blacksidemre/hermetic:lac-data-bridge-integration`.
+- The canonical repository tree was verified byte-for-byte against the locally tested tree before
+  the branch ref was advanced.
+
 ## Current product state
 
 The product source is now consolidated in one repository. The deterministic Python analytics,
