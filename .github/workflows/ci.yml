@@ -3,6 +3,7 @@ name: CI
 on:
   push:
   pull_request:
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -71,6 +72,7 @@ jobs:
             src/app/components/__tests__/lac-quick-workspace.test.tsx \
             'src/app/api/lac/[...path]/__tests__/route.test.ts' \
             src/__tests__/desktop-launcher-script.test.ts \
+            src/__tests__/offline-fonts.test.ts \
             src/__tests__/run-next-script.test.ts
       - name: Build consolidated web application
         run: pnpm build

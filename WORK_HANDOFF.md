@@ -126,7 +126,13 @@ Desktop TypeScript:
   PASS
 
 Desktop bridge/UI/proxy/launcher Vitest:
-  43 passed
+  44 passed
+
+Offline production font contract:
+  PASS (no build-time Google Fonts request)
+
+Canonical Next production build:
+  PASS (69 routes/pages, telemetry and network proxies disabled)
 
 git diff --check:
   PASS
@@ -136,10 +142,9 @@ The transient Linux environment's installed `polars` and `duckdb` native modules
 CPU `Bus error` in their two execution tests. The remainder of the suite passes when those two
 known tests are deselected; GitHub Linux/Windows jobs run the complete suite on clean runners.
 
-The local Next production build cannot be used as a release signal in this workspace because
-`apps/desktop/node_modules` is an ignored symlink to the separately checked-out Hermetic dependency
-tree; Turbopack correctly rejects a symlink outside the project filesystem root. The canonical CI
-performs a fresh in-tree `pnpm install` and production build.
+The canonical Next production build passes with an in-tree dependency tree. Geist and Geist Mono
+are bundled from the existing `@fontsource-variable` packages, so an offline build no longer makes
+a Google Fonts request.
 
 Rust/Cargo and PyInstaller are not installed in this Linux workspace. Windows CI therefore owns
 the Rust `cargo check --locked`, packaged-backend build and executable health smoke. This is not a
@@ -147,7 +152,9 @@ claim that the final installed Tauri application passed on the user's physical W
 
 ## Remaining release blockers
 
-1. GitHub Actions for the consolidation commit must be green.
+1. GitHub Actions must run on a normal authenticated push or manual `workflow_dispatch`. Commits
+   published through the connected GitHub App were verified on the branch but did not emit a
+   workflow run, so CI is **not claimed green** for the final checkpoint.
 2. Run one real local-Ollama Agent request on controlled CSV and XLSX and confirm verified output.
 3. Install Visual Studio Build Tools (`Desktop development with C++`, MSVC and Windows SDK) and
    complete the physical `pnpm desktop:dev` Tauri acceptance.

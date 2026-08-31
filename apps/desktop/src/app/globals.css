@@ -99,6 +99,8 @@
   --color-series-3: #f59e0b;
 
   /* Fonts */
+  --font-geist-sans: "Geist Variable";
+  --font-geist-mono: "Geist Mono Variable";
   --font-sans: var(--font-geist-sans);
   --font-mono: var(--font-geist-mono);
 
