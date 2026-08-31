@@ -102,7 +102,17 @@ def test_agent_api_runs_local_planner_and_returns_verified_fallback(tmp_path, mo
     }
     assert payload["agent"]["run"]["verification"]["status"] == "passed"
     assert payload["agent"]["synthesis"]["verification"]["status"] == "passed"
+    assert payload["history"]["status"] == "saved"
     assert "raw_rows" not in nested_keys(payload)
+
+    history = TestClient(app).get("/api/v1/analysis/history").json()
+    assert len(history["runs"]) == 1
+    run_id = history["runs"][0]["run_id"]
+    archived = TestClient(app).get(f"/api/v1/analysis/history/{run_id}").json()
+    assert archived["run"]["verifier_status"] == "passed"
+    assert archived["run"]["findings"]
+    deleted = TestClient(app).delete(f"/api/v1/analysis/history/{run_id}")
+    assert deleted.status_code == 200
 
 
 def test_agent_api_model_unavailable_keeps_deterministic_dashboard(tmp_path, monkeypatch):
@@ -131,6 +141,7 @@ def test_agent_api_model_unavailable_keeps_deterministic_dashboard(tmp_path, mon
     assert payload["dataset"]["rows"] == 1508
     assert payload["dashboard"]["cards"]
     assert all(card["source"] for card in payload["dashboard"]["cards"])
+    assert payload["history"] == {"status": "not_saved", "reason": "run_not_verified"}
     assert "private host detail" not in response.text
 
 

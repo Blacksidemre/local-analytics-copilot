@@ -1,0 +1,222 @@
+/**
+ * Corrupt-vs-missing handling for runtime-config.json: setRuntimeConfig is a
+ * read-modify-write, so an unparsable file used to be silently replaced by
+ * the next write. Missing (ENOENT) stays a quiet empty config; corrupt gets
+ * warned about and backed up first.
+ */
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
+import { mkdtempSync, mkdirSync, readdirSync, readFileSync, writeFileSync, rmSync } from "fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import {
+  getRuntimeConfig,
+  resolveActiveRuntime,
+  getActiveSandboxRuntime,
+  setRuntimeConfig,
+  clearRuntimeConfigCache,
+  getActiveModels,
+  getActiveEffort,
+  getComposerMode,
+  isCompiledComposerEligible,
+} from "@/lib/runtime-config";
+import { hermeticPaths, setPathRoots } from "@/lib/paths";
+import { logger } from "@/lib/logger";
+
+let root: string;
+
+beforeEach(() => {
+  root = mkdtempSync(join(tmpdir(), "hermetic-runtime-config-"));
+  setPathRoots({ dataRoot: join(root, "data") });
+  clearRuntimeConfigCache();
+});
+
+afterEach(() => {
+  setPathRoots({});
+  clearRuntimeConfigCache();
+  vi.restoreAllMocks();
+  rmSync(root, { recursive: true, force: true });
+});
+
+describe("runtime-config — corrupt file vs missing file", () => {
+  it("missing file → empty config, no warn, no backup", () => {
+    const warn = vi.spyOn(logger, "warn").mockImplementation(() => {});
+    expect(getRuntimeConfig()).toEqual({});
+    expect(warn).not.toHaveBeenCalled();
+    expect(() => readdirSync(join(root, "data"))).toThrow(); // nothing was created
+  });
+
+  it("corrupt JSON → warn, .corrupt-<ts> backup preserved, empty config returned", () => {
+    const warn = vi.spyOn(logger, "warn").mockImplementation(() => {});
+    const path = hermeticPaths.runtimeConfigFile();
+    mkdirSync(join(root, "data"), { recursive: true });
+    writeFileSync(path, "{ definitely not json", "utf-8");
+
+    expect(getRuntimeConfig()).toEqual({});
+    expect(warn).toHaveBeenCalledOnce();
+
+    const backup = readdirSync(join(root, "data")).find((f) =>
+      /^runtime-config\.json\.corrupt-\d+$/.test(f)
+    );
+    expect(backup).toBeDefined();
+    expect(readFileSync(join(root, "data", backup!), "utf-8")).toBe("{ definitely not json");
+  });
+
+  it("setRuntimeConfig after a corrupt read writes fresh without destroying the backup", () => {
+    vi.spyOn(logger, "warn").mockImplementation(() => {});
+    const path = hermeticPaths.runtimeConfigFile();
+    mkdirSync(join(root, "data"), { recursive: true });
+    writeFileSync(path, "garbage", "utf-8");
+
+    const merged = setRuntimeConfig({ activeProvider: "ollama" });
+    expect(merged.activeProvider).toBe("ollama");
+
+    const files = readdirSync(join(root, "data"));
+    expect(files.filter((f) => f.startsWith("runtime-config.json.corrupt-"))).toHaveLength(1);
+    expect(JSON.parse(readFileSync(path, "utf-8")).activeProvider).toBe("ollama");
+  });
+});
+
+describe("settings blocks (providers/sandbox/retention) persist and clear", () => {
+  it("round-trips a block through disk and replaces it wholesale", () => {
+    setRuntimeConfig({ retention: { maxHistoryEntries: 300 } });
+    expect(getRuntimeConfig().retention).toEqual({ maxHistoryEntries: 300 });
+
+    // Wholesale replacement: a block sent without a field CLEARS that field
+    // (the /api/settings route sends complete blocks — per-field merge would
+    // make clearing impossible).
+    setRuntimeConfig({ retention: { maxRunRecords: 50 } });
+    expect(getRuntimeConfig().retention).toEqual({ maxRunRecords: 50 });
+
+    setRuntimeConfig({ providers: { openaiModel: "llama3.3" }, sandbox: { memoryFraction: 0.5 } });
+    clearRuntimeConfigCache();
+    const rc = getRuntimeConfig();
+    expect(rc.providers?.openaiModel).toBe("llama3.3");
+    expect(rc.sandbox?.memoryFraction).toBe(0.5);
+    expect(rc.retention).toEqual({ maxRunRecords: 50 });
+  });
+});
+
+describe("setRuntimeConfig never silently drops a field", () => {
+  it("composer.mode persists to disk, takes effect immediately, and survives a cache clear", () => {
+    // The observed bug: the per-field merge allowlist didn't name composer,
+    // so the route validated the change, merged it, and setRuntimeConfig ate
+    // it — the dropdown showed Compiled (optimistic mirror), the run stayed
+    // generative, and a restart reverted the setting.
+    setRuntimeConfig({ composer: { mode: "compiled" } });
+    expect(getComposerMode()).toBe("compiled"); // no restart required
+    clearRuntimeConfigCache();
+    expect(getComposerMode()).toBe("compiled"); // and it's on disk
+    setRuntimeConfig({ composer: {} });
+    clearRuntimeConfigCache();
+    expect(getComposerMode()).toBe("generative");
+  });
+
+  it("isCompiledComposerEligible: mode + series>0 + findings>0, the shared predicate (PE-1)", () => {
+    setRuntimeConfig({ composer: { mode: "compiled" } });
+    clearRuntimeConfigCache();
+    expect(isCompiledComposerEligible(2, 3)).toBe(true);
+    expect(isCompiledComposerEligible(0, 3)).toBe(false); // no declared series
+    expect(isCompiledComposerEligible(2, 0)).toBe(false); // no declared findings
+    // Generative mode is never eligible regardless of the envelope.
+    setRuntimeConfig({ composer: {} });
+    clearRuntimeConfigCache();
+    expect(isCompiledComposerEligible(2, 3)).toBe(false);
+  });
+
+  it("a field the merge has no special case for still round-trips (the drop class)", () => {
+    // Future-proofing the CLASS: new RuntimeConfig fields must not require
+    // remembering to extend an allowlist to persist at all.
+    setRuntimeConfig({ future_block: { anything: 1 } } as never);
+    clearRuntimeConfigCache();
+    expect((getRuntimeConfig() as Record<string, unknown>).future_block).toEqual({ anything: 1 });
+    // null still clears; deep-merged backend blocks still merge per-field.
+    setRuntimeConfig({ future_block: null } as never);
+    clearRuntimeConfigCache();
+    expect((getRuntimeConfig() as Record<string, unknown>).future_block).toBeUndefined();
+    setRuntimeConfig({ ollama: { enabled: true, baseUrl: "http://x", activeModel: "m1" } });
+    setRuntimeConfig({ ollama: { activeModel: "m2" } } as never);
+    expect(getRuntimeConfig().ollama).toEqual({
+      enabled: true,
+      baseUrl: "http://x",
+      activeModel: "m2",
+    });
+  });
+});
+
+describe("getActiveModels — the cross-harness model selection", () => {
+  it("defaults to the constants when nothing is stored", () => {
+    const models = getActiveModels();
+    expect(models.codeGen).toBe("claude-sonnet-4-6");
+    expect(models.uiCompose).toBe("claude-sonnet-4-6");
+  });
+
+  it("honors a stored selection (the Opus-5-everywhere path)", () => {
+    setRuntimeConfig({ models: { codeGen: "claude-opus-5", uiCompose: "claude-opus-5" } });
+    clearRuntimeConfigCache();
+    const models = getActiveModels();
+    expect(models.codeGen).toBe("claude-opus-5");
+    expect(models.uiCompose).toBe("claude-opus-5");
+  });
+
+  it("falls back per-field for stale/unknown ids from an old config", () => {
+    setRuntimeConfig({ models: { codeGen: "claude-retired-model", uiCompose: "claude-fable-5" } });
+    clearRuntimeConfigCache();
+    const models = getActiveModels();
+    expect(models.codeGen).toBe("claude-sonnet-4-6");
+    expect(models.uiCompose).toBe("claude-fable-5");
+  });
+});
+
+describe("getActiveEffort — per-phase overrides", () => {
+  it("phase entry wins over global; auto/unknown defer to phase policy", () => {
+    setRuntimeConfig({
+      models: { efforts: { compose: "medium", code_gen: "max" }, effort: "low" },
+    });
+    clearRuntimeConfigCache();
+    expect(getActiveEffort("compose")).toBe("medium");
+    expect(getActiveEffort("code_gen")).toBe("max");
+    // No per-phase entry → the global override applies.
+    expect(getActiveEffort("sql_gen")).toBe("low");
+    setRuntimeConfig({ models: { efforts: {}, effort: "auto" } });
+    clearRuntimeConfigCache();
+    expect(getActiveEffort("compose")).toBeNull();
+    expect(getActiveEffort(null)).toBeNull();
+  });
+});
+
+describe("resolveActiveRuntime — no-Docker fallback (§11)", () => {
+  it("an explicit user pin always wins", () => {
+    expect(resolveActiveRuntime("docker", false)).toBe("docker");
+    expect(resolveActiveRuntime("wasm", true)).toBe("wasm");
+  });
+
+  it("no pin + Docker absent → wasm", () => {
+    expect(resolveActiveRuntime(undefined, false)).toBe("wasm");
+  });
+
+  it("no pin + Docker present → docker", () => {
+    expect(resolveActiveRuntime(undefined, true)).toBe("docker");
+  });
+
+  it("no pin + Docker availability unknown → docker (preserve current behavior)", () => {
+    expect(resolveActiveRuntime(undefined, undefined)).toBe("docker");
+  });
+});
+
+describe("getActiveSandboxRuntime — HERMETIC_FORCE_RUNTIME (desktop channel, D15)", () => {
+  afterEach(() => {
+    delete process.env.HERMETIC_FORCE_RUNTIME;
+  });
+
+  it("forces wasm even when Docker is present (the packaged desktop app)", () => {
+    process.env.HERMETIC_FORCE_RUNTIME = "wasm";
+    setRuntimeConfig({ dockerAvailable: true }); // Docker present + no pin → would be docker
+    expect(getActiveSandboxRuntime()).toBe("wasm");
+  });
+
+  it("ignores a bogus value and falls back to normal resolution", () => {
+    process.env.HERMETIC_FORCE_RUNTIME = "nonsense";
+    setRuntimeConfig({ sandboxRuntime: "docker" });
+    expect(getActiveSandboxRuntime()).toBe("docker");
+  });
+});

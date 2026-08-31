@@ -1,0 +1,129 @@
+/**
+ * Shared prompt fragments for the placeholder-grounding invariant.
+ *
+ * Every composer (single-shot dashboard, investigate, per-step notebook
+ * cell) feeds its output through ONE resolver — resolve-placeholders.ts —
+ * so the prompt-side contract of that resolver is a single invariant:
+ *
+ *   - $result / $chartData placeholders are JSON STRING values, never the
+ *     object form ({"$result": ...} does not resolve);
+ *   - prose must NEVER state a literal number — every figure must be a
+ *     $result placeholder so it resolves to a value the analysis computed.
+ *
+ * The invariant is stated here ONCE and interpolated into all three
+ * composers. Each composer's genuinely-different parts (step_N_-prefixed
+ * vs unprefixed keys, which components are named, the fallback wording)
+ * are parameters, NOT copies.
+ *
+ * BYTE-IDENTITY CONSTRAINT: the record/replay layer (replay.ts) hashes the
+ * exact request content, so scripts/golden and test-spec fixtures key on
+ * these prompt strings byte-for-byte. The fragments below therefore
+ * reproduce each composer's historical wording EXACTLY — including the
+ * places where the wording drifted apart (the METADATA_* rules keep the
+ * single-shot composer's phrasing). Unifying the wording across composers
+ * is a deliberate follow-up that requires re-recording the fixtures.
+ */
+
+// ── The prose-number invariant (parameterized) ───────────────────────
+
+export interface NoLiteralNumberRuleOpts {
+  /** What a prose number is called in this composer (e.g. "figure", "figure in the insight"). */
+  figure: string;
+  /** The placeholder key shape shown to the model (e.g. "$result:<key>", "$result:step_N_<key>"). */
+  placeholder: string;
+  /** Optional clause finishing "…MUST be a <placeholder> placeholder<clause>." */
+  clause?: string;
+  /** What to do when a number cannot be expressed as a placeholder. */
+  fallback: string;
+}
+
+/**
+ * "NEVER write a literal number in prose" — the grounding half of the
+ * invariant, in each composer's exact historical wording.
+ */
+export function noLiteralNumberRule(opts: NoLiteralNumberRuleOpts): string {
+  return `NEVER write a literal number in prose. Every ${opts.figure} MUST be a ${opts.placeholder} placeholder${opts.clause ?? ""}. ${opts.fallback}`;
+}
+
+// ── The string-form invariant ────────────────────────────────────────
+
+/**
+ * Placeholders are JSON strings, never the object form. Stated explicitly
+ * in the step-cell composer; the dashboard composers convey it by example
+ * (see RESULT_PLACEHOLDER_USAGE / CHART_DATA_STRING_USAGE below).
+ */
+export const PLACEHOLDER_STRING_FORM_RULE = `Placeholders are JSON STRING values. Write "value": "$result:total_revenue" and "data": "$chartData:monthly_trend". NEVER use object form — {"$result": "total_revenue"} and {"$chartData": "monthly_trend"} are WRONG and will not resolve.`;
+
+// ── Placeholder usage lines (parameterized: prefixed vs unprefixed) ──
+
+/** `Use "$result:<key>" for scalar values…` — investigate/step-cell user prompts. */
+export function resultPlaceholderLine(
+  opts: { components?: string; keyNote?: string } = {}
+): string {
+  return `Use "$result:<key>" for scalar values${opts.components ?? ""}.${opts.keyNote ?? ""}`;
+}
+
+/** `Use "$chartData:<key>" for chart data props.` — investigate/step-cell user prompts. */
+export function chartDataPlaceholderLine(opts: { keyNote?: string } = {}): string {
+  return `Use "$chartData:<key>" for chart data props.${opts.keyNote ?? ""}`;
+}
+
+// ── Single-shot dashboard composer's wording (verbatim) ──────────────
+
+/** Metadata-mode $result usage, single-shot user prompt (dashboard-compose). */
+export const RESULT_PLACEHOLDER_USAGE = `Use "$result:<key>" placeholders for all scalar values in StatCard, TrendIndicator, and similar components. Example: {"value": "$result:total_sales"}. Supports dot-notation for nested keys: "$result:summary.avg_price".`;
+
+/** Static (no-DataController) $chartData usage, single-shot user prompt. */
+export const CHART_DATA_STRING_USAGE = `When referencing chart data in component props, use the string "$chartData:<key>" as the data value. It will be replaced with the actual array at render time. For example: "data": "$chartData:bar_data"`;
+
+/**
+ * Narrative grounding rules (grounded-narrative spec, 2026-08-06): the
+ * composer must never ASSERT what it cannot SEE. In metadata mode it sees no
+ * values at all, so a typed-out number is a fabrication and a direction word
+ * is a guess anchored to the question's framing — both are the exact failure
+ * this block exists to prevent. Placeholders resolve inline inside prose
+ * (resolve-placeholders.ts pass 2), so binding a direction WORD works:
+ * "Churn is $result:churn_trend_direction over the year" renders with the
+ * computed word.
+ */
+export const NARRATIVE_GROUNDING_RULES = `## Narrative Grounding (NON-NEGOTIABLE)
+Every factual claim in TextBlock/Annotation content and StatCard descriptions must be BOUND to a computed result, never asserted from expectation:
+- NUMBERS: always "$result:<key>" (inline placeholders resolve mid-sentence). NEVER type a numeric value into narrative text yourself.
+- DIRECTION / TREND words (rising, falling, grew, declined, accelerating, flat...): never write one as a literal. Bind the word itself from a computed key — e.g. "Churn is $result:churn_rate_trend_direction across 2024" — or select phrasing with {"$cond": {...}, "$then": "...", "$else": "..."} on a computed boolean. If no computed key supports the claim, do not make it: describe what the chart shows structurally ("monthly churn rate by segment, below") without asserting a direction. When the direction's finding also exposes a FIT statistic (r_squared, p_value in value_fields), bind it beside the direction — "rising (R\u00b2 = $finding:trend.r_squared)" — a direction word over a wave-shaped series without its fit qualifier overstates the trend.
+- SUPERLATIVES (highest, peak, worst, top): only via peak_/top_/... result keys, with the value bound.
+- UNITS: NEVER write a unit word ("percentage points", "pp", "%", "ratio", ...) beside a bound finding value — the server renders the declared unit WITH the number automatically ("$finding:churn_slope.value" renders as "0.9 pp"). You never see values and CANNOT convert units; your own unit words risk a 100\u00d7 misread. Write the sentence around the binding and let it carry the unit.
+- SENTINELS & FLAGS: a bound value can be a sentinel ("none", null, "n/a", empty) or a BOOLEAN. Inline sentinel/boolean bindings are REFUSED at resolve time — the token is stripped and the sentence is left broken. So NEVER interpolate a flag/verdict/boolean key into prose ("rates are $finding:heterogeneity_significant" breaks). Any dtype=boolean or flag-like key MUST be used ONLY via {"$cond": ...} phrasing selection or as a whole StatCard value. State absence explicitly ("no base effect was detected"). DETECTOR findings (step change, outliers, anomalies) can be null-valued when NOTHING was detected — the whole tile/paragraph narrating one MUST be gated on presence with $cond, never written assuming detection: a stripped null leaves the neighboring sentences ("This exceeded the baseline...") asserting a detection that did not happen.
+- IDENTIFIERS: some bound values are machine identifiers, not words — a decomposition's \`dominant\` field resolves to a term KEY like "churn_volume_effect". Never bind such a field raw into prose and never append a generic noun to it ("the $finding:decomp.dominant effect" renders as "the churn volume effect effect"). The projection's value_fields lists the possible keys — use {"$cond": ...} against them to select human phrasing ("higher churn volume" / "a larger customer base").
+- SIGNIFICANT RESULTS STATE THEIR SIGN: a significant correlation/trend is narrated by its direction and magnitude ("higher-coverage years carry LOWER medians, rho = -0.41"), never as an absence ("do not systematically carry higher prices") — negation framing of a significant result hides the finding it establishes.
+- DETECTION LANGUAGE: "detected"/"no X was detected" requires a TEST that ran — an assumption ("robust by construction") is stated as reasoning, never in detection language; and a computed statistic (a correlation, a p-value) is never dismissed by fiat — the dismissal needs a stated criterion.
+- NO CAUSAL LANGUAGE: never write "therefore contributed", "caused", "drove" from a decomposition or comparison — computed shares are stated as shares; causation is never computed.
+- ATTRIBUTION: when the results include a decomposition (…_from_rate / …_from_volume / …_from_mix style keys), any "primarily driven by / attributable to" sentence MUST follow the decomposition's dominant term with its share bound — never a categorical flag that sits beside it. If a flag and a decomposition could disagree, the decomposition wins.
+- ANSWER PLACEMENT: the metric the question LITERALLY asks for ("what is the churn rate" → the overall churn rate) must appear as a headline StatCard, bound via its placeholder — not only inside prose. When a "Required Headline Tiles" section is present, it IS the headline plan — compose every listed tile. For "how has X changed" questions the narrative must describe the TRAJECTORY (how it began, its shape — waves/regimes with their finding bound — and where the series ENDS relative to its peak), not just name a direction.
+- COUNTS IN PROSE: never open items with bare parenthesized counts — "(4) years outside 1800-2030" reads as list numbering; write "4 years outside 1800-2030".
+- ELEMENT BUDGET: the best dashboards of this pipeline shipped ~18 elements; past ~24 every additional element dilutes the answer. Every element must earn its place — no filler prose ("revealing the uneven pace of change"), no stat tiles for non-answers ("Change: 8.25" with no context).
+- NARRATIVE IS MANDATORY: at least one TextBlock states the ANSWER in words with its findings bound — the shape of the change, where it concentrates, and the caveats that gate it. Tiles and charts alone are not an answer (a run shipped 5 tiles + 2 charts and zero sentences; every host summary surface came back empty). The element budget trims filler prose, never the answer itself.
+- NO BOILERPLATE: never include generic how-to-read-a-chart prose ("Large positive bars signal acceleration", "each point represents a month"), color narration ("the amber and indigo lines"), or UI instructions ("Use the Year and Quarter filters above") — every sentence must state something about THIS data, bound to its findings.
+- HEADERS KEEP THEIR PROMISE: a section or paragraph titled with a topic ("Wave Structure & Current State") must actually narrate that topic's findings with their values bound — a header naming the current state above prose that never states it is a broken promise the reader notices.
+- GRANULARITY CONFLICTS: when trend findings at two granularities disagree (monthly "rising", quarterly "flat"), reconcile them in ONE sentence with the deciding statistic bound — "flat" from a significance test means "not significant at this granularity" (bind the p-value), not "no growth"; never leave both labels standing unexplained. When per-group findings share a value ("all four segments rising"), say it ONCE with the differentiating magnitudes bound — four identical clauses carry less information than one sentence with the contrast.
+- ATTESTED SUPERLATIVES CARRY THEIR RAW EXTREME: when a superlative finding's raw_value/raw_period differ from its attested value/period, the narrative states BOTH in one sentence with both bound — "peaked at $finding:x.value in $finding:x.period among well-covered years; the raw maximum $finding:x.raw_value ($finding:x.raw_period) sits in a thinly-covered year" — and when thin_periods_skipped is large, says how much was screened. An audited run presented a 0.4 attested peak as "the" peak while the raw max was 65x larger and 90% of years had been skipped; the reader must see the screen, not just its output. The SAME rule applies to a current-state finding whose latest_value differs from its attested value: state the attested endpoint AND the raw final observation (with latest_n) — never let a thin-data walk-back silently erase the most recent years from the story.
+- CAVEAT MECHANISMS COME FROM THE FINDING, NEVER FROM IMAGINATION: a current-state finding that excluded trailing periods carries excluded_reason ("attestation" = thin data / collection falloff, "coverage" = contributors dropped, "magnitude" = value collapse). The caveat binds THAT mechanism. An audited run blamed "incomplete currency coverage as reporting was still arriving" for an attestation walk-back — a fabricated mechanism is worse than no caveat.
+- CHECKS: findings with dtype "check" are the analysis' own validations. NEVER narrate passing checks as blanket assurance ("all checks passed"); a FAILED check is narrative-worthy — bind its evidence and caveat every dependent claim.
+- UNAVAILABLE FINDINGS: a finding listed with NO value_fields (or absent entirely) is UNAVAILABLE — its computation did not produce a result. State that it was unavailable if relevant; NEVER assert its conclusion ("an ANOVA confirms prices differ by decade" over a null test is fabrication in the exact voice of rigor).
+- METHODS: never name a statistical test or method in prose unless BINDING the finding's method/test field ("$finding:x.test") — a summary claiming Kruskal-Wallis while the finding records "anova" is a fabricated method claim.
+- NO EXTRAPOLATION: never project a whole-series trend onto a sub-period ("subsequent quarters reflect the rising overall trend") — a sub-period claim needs its own bound finding, and the sub-period data may contradict the global fit (a -83% quarter under a "rising" OLS line).
+- The question's phrasing is NOT evidence. If the question presumes a direction ("why is churn rising?") and the results carry a trend key, bind that key — the computed answer may contradict the premise, and the dashboard must side with the computation.`;
+
+/** Static (no-DataController) $chartData rule, single-shot compose rules. */
+export const CHART_DATA_PLACEHOLDER_RULE = `Reference chart data using "$chartData:<key>" placeholders in data props. Do NOT inline data arrays. Example: "data": "$chartData:bar_data". For nested fields like heatmap data, use "$chartData:heatmap.z", "$chartData:heatmap.x_labels", "$chartData:heatmap.y_labels".`;
+
+/**
+ * Metadata-mode number discipline, single-shot compose rules. Same
+ * invariant as noLiteralNumberRule, in the single-shot composer's
+ * historical phrasing (byte-pinned by the replay fixtures — see module
+ * doc before unifying).
+ */
+export const METADATA_PLACEHOLDER_RULES: readonly string[] = [
+  'Use "$result:<key>" placeholders for ALL scalar values in StatCard value, TrendIndicator value/previous, and any other numeric display props. Never fabricate or guess specific numbers.',
+  "TextBlock content must be qualitative and descriptive — do NOT include specific numeric values. Describe trends, patterns, and relationships without citing exact figures.",
+  "Never hallucinate specific numeric values. If you need a number displayed, it MUST come from a $result:<key> placeholder.",
+];

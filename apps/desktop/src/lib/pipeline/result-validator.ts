@@ -1,0 +1,305 @@
+/**
+ * Semantic result validator — pure function that inspects a successful
+ * sandbox execution and returns a verdict on whether the result looks
+ * degenerate (empty / NaN-only / all-zeros).
+ *
+ * Used by `runPipeline()` to catch the "code ran but the result is
+ * useless" case that the current exception-only retry loop misses.
+ * Semantic failures retry against the same budget as exception
+ * failures; if the budget is exhausted the pipeline returns the
+ * result with `degraded: true` rather than throwing.
+ *
+ * Conservative on purpose: we err on the side of NOT flagging things
+ * that might be legitimate (e.g. single-row KPI results) — false
+ * positives are worse than false negatives because they cost a retry
+ * cycle. Order of checks below is "most fundamental first" so the
+ * verdict's `reason` field cites the most informative failure.
+ *
+ * Out of scope (deferred):
+ *
+ * - Length-1 chart_data arrays: ambiguous (could be a KPI or could be
+ *   a broken comparison). The implementation plan calls for inspecting
+ *   chart-type hints from code-gen, but the chart type isn't actually
+ *   decided until the UI-composition step downstream. Skipping for v1.
+ */
+
+import type { SandboxExecutionResult } from "@/lib/contracts/execution";
+
+/**
+ * A stable, producer-owned classifier for a semantic failure. Threaded into
+ * recordFailure as the errorClass so the failure telemetry classifies by this
+ * code rather than regexing the human `reason` prose back into a class (the
+ * type existed here; don't destroy it into a string and reconstruct it).
+ */
+export type SemanticFailureCode =
+  | "semantic_no_output"
+  | "semantic_blocking_check"
+  | "semantic_unbacked_claims"
+  | "semantic_findings_collapsed"
+  | "semantic_unplottable"
+  | "semantic_empty"
+  | "semantic_null_result"
+  | "semantic_all_zeros";
+
+export type ValidationVerdict =
+  { ok: true } | { ok: false; code: SemanticFailureCode; reason: string; suggestedFix: string };
+
+/** True if `v` is JS NaN or one of the common stringified nullish markers. */
+function isDegenerateScalar(v: unknown): boolean {
+  if (typeof v === "number") return Number.isNaN(v);
+  if (v === null || v === undefined) return true;
+  if (typeof v === "string") {
+    const trimmed = v.trim().toLowerCase();
+    return trimmed === "nan" || trimmed === "none" || trimmed === "null";
+  }
+  return false;
+}
+
+/**
+ * True if every numeric field across every row is exactly 0 (and there's
+ * at least one numeric field). Excludes arrays where the only columns are
+ * non-numeric (e.g. a pure list of labels) — those aren't degenerate, the
+ * rendering layer just hasn't joined them with a metric yet.
+ */
+function isAllZeroRows(rows: unknown[]): boolean {
+  if (rows.length === 0) return false;
+  let sawNumeric = false;
+  for (const row of rows) {
+    if (!row || typeof row !== "object") return false;
+    for (const v of Object.values(row as Record<string, unknown>)) {
+      if (typeof v === "number") {
+        sawNumeric = true;
+        if (v !== 0) return false;
+      }
+    }
+  }
+  return sawNumeric;
+}
+
+export function validateExecutionResult(exec: SandboxExecutionResult): ValidationVerdict {
+  const resultKeys = Object.keys(exec.results ?? {});
+  const chartKeys = Object.keys(exec.chart_data ?? {});
+
+  // Check #1 — nothing at all
+  if (resultKeys.length === 0 && chartKeys.length === 0) {
+    return {
+      ok: false,
+      code: "semantic_no_output",
+      reason: "Execution produced no results or chart data.",
+      suggestedFix:
+        "Make sure your code writes at least one entry into the results dict or chart_data dict before exiting.",
+    };
+  }
+
+  // Check #2a — FAILED BLOCKING CHECK (run-36: the model's own scope check
+  // caught a year-cast that silently discarded 119 years, and the run
+  // shipped anyway). A blocking-severity check the analysis itself declared
+  // and FAILED is the only detector for semantic corruption the platform
+  // cannot see — enforcement is the other half of the checks architecture.
+  // Rides the bounded retry; if the condition is a true data property the
+  // model re-declares at severity "caveat" and the run proceeds gated.
+  const blockingFailures = (Array.isArray(exec.findings) ? exec.findings : []).filter((f) => {
+    const e = f as {
+      dtype?: unknown;
+      tags?: unknown;
+      name?: unknown;
+      definition?: unknown;
+      value?: unknown;
+    };
+    return (
+      e.dtype === "check" &&
+      Array.isArray(e.tags) &&
+      e.tags.includes("blocking") &&
+      e.value !== null &&
+      typeof e.value === "object" &&
+      (e.value as Record<string, unknown>).passed === false
+    );
+  });
+  if (blockingFailures.length > 0) {
+    const f = blockingFailures[0] as { name?: string; definition?: string; value?: unknown };
+    return {
+      ok: false,
+      code: "semantic_blocking_check",
+      reason: `The analysis' own BLOCKING check failed: ${f.name} — ${f.definition}. Evidence: ${JSON.stringify(f.value)}.`,
+      suggestedFix:
+        "Fix the defect the check identifies (its evidence names it — e.g. a declared-vs-observed range mismatch means the extraction/filter discarded data; repair the extraction, don't relax the check). If the failed condition is a TRUE property of the data rather than a pipeline defect, re-declare the check with severity='caveat' and keep the analysis honest about it.",
+    };
+  }
+
+  // Check #2e — CHECKS-ONLY MANIFEST (run-38): results carrying ~20
+  // statistical claims (slopes, p-values, peaks, comparisons) while the
+  // manifest holds checks and nothing else is the biggest provenance
+  // regression shape — every claim unbacked. Rides the bounded retry.
+  const entriesAll = Array.isArray(exec.findings) ? exec.findings : [];
+  const nonCheckFindings = entriesAll.filter(
+    (f) => (f as { dtype?: unknown }).dtype !== "check"
+  ).length;
+  const statKeys = resultKeys.filter((k) =>
+    /_(p_value|slope|pct_change|r2|r_squared|pearson_r)$|^(peak|trough|max|min)_/.test(k)
+  ).length;
+  if (statKeys >= 6 && entriesAll.length >= 3 && nonCheckFindings <= 2) {
+    return {
+      ok: false,
+      code: "semantic_unbacked_claims",
+      reason: `results carries ${statKeys} statistical claims but the findings manifest holds ${nonCheckFindings} non-check findings — the claims have no declared backing.`,
+      suggestedFix:
+        "Declare a finding for every statistical claim results carries (trends with direction/slope/p, superlatives with period+value, comparisons) — checks validate the analysis; findings ARE the analysis. Keep the checks.",
+    };
+  }
+
+  // Check #2b — FINDINGS COLLAPSE (menu run, 2026-08-07): most declared
+  // findings null-valued while charts carry real series. Observed cause: a
+  // data-cleaning step converting legitimate ZEROS to null (a $0 median is
+  // data; unpriced records are excluded at the RECORD level), gutting every
+  // downstream fit — 10 of 12 findings null over an 18-element dashboard.
+  // Rides the existing semantic retry so the run repairs instead of shipping.
+  const findingEntries = Array.isArray(exec.findings) ? exec.findings : [];
+  if (findingEntries.length >= 4 && chartKeys.length > 0) {
+    const allNull = (val: unknown): boolean => {
+      if (val === null || val === undefined) return true;
+      if (typeof val !== "object" || Array.isArray(val)) return false;
+      const rec = val as Record<string, unknown>;
+      // slope exactly 0 with p exactly 1 is a regression that never ran —
+      // "flat" beside them doesn't make the finding real (run-23: five such
+      // trends narrated as flat over a series rising 243 -> 52,868).
+      if (rec.slope_per_period === 0 && rec.p_value === 1) return true;
+      const leaves = Object.values(rec);
+      return leaves.length > 0 && leaves.every((x) => x === null || x === 0 || x === 1);
+    };
+    const nulled = findingEntries.filter((f) => allNull((f as { value?: unknown })?.value)).length;
+    if (nulled / findingEntries.length > 0.6) {
+      return {
+        ok: false,
+        code: "semantic_findings_collapsed",
+        reason: `${nulled} of ${findingEntries.length} declared findings are null/degenerate while chart_data holds real series — the findings layer collapsed.`,
+        suggestedFix:
+          "Almost always a cleaning bug upstream of the stat helpers: check whether ZEROS were converted to null/NaN (a $0 median is data — exclude unrecorded values at the RECORD level, not by nulling aggregates), and whether the series passed to finding_trend/step_change/current_state is the same non-null series the charts plot. Recompute findings from the populated series.",
+      };
+    }
+  }
+
+  // Check #2c — CHART X-KEY CONTRACT (run-31: a 105-row time series shipped
+  // with no year field — as a time series it cannot be plotted). Mechanical
+  // schema on the assembled artifacts: every multi-row chart of numeric
+  // records must carry an x-axis key (a known period key, or any key
+  // present in every row whose values aren't all numbers). Rides the
+  // semantic retry with a targeted fix.
+  const X_KEYS = [
+    "year",
+    "month",
+    "date",
+    "period",
+    "quarter",
+    "x",
+    "label",
+    "name",
+    "category",
+    "decade",
+    "segment",
+  ];
+  for (const key of chartKeys) {
+    const val = exec.chart_data[key];
+    const rows = Array.isArray(val) ? val : (val as { rows?: unknown[] } | null)?.rows;
+    if (!Array.isArray(rows) || rows.length < 3) continue;
+    const objRows = rows.filter(
+      (r): r is Record<string, unknown> => r !== null && typeof r === "object" && !Array.isArray(r)
+    );
+    if (objRows.length < 3) continue;
+    const cols = Object.keys(objRows[0]);
+    if (cols.length < 2) continue;
+    const hasX = cols.some(
+      (c) =>
+        X_KEYS.includes(c.toLowerCase()) ||
+        /_(year|month|date|period|label|name|ym)$/.test(c.toLowerCase()) ||
+        objRows.every((r) => typeof r[c] === "string")
+    );
+    const allNumeric = cols.every((c) =>
+      objRows.every((r) => typeof r[c] === "number" || r[c] === null)
+    );
+    if (!hasX && allNumeric) {
+      return {
+        ok: false,
+        code: "semantic_unplottable",
+        reason: `chart_data["${key}"] has ${objRows.length} rows of numeric records with NO x-axis key (${cols.join(", ")}) — it cannot be plotted.`,
+        suggestedFix: `Every chart series row must carry its x value (year/month/date/label). Add the index column back to chart_data["${key}"] — a time series stripped of its year field is unusable.`,
+      };
+    }
+  }
+
+  // Check #3 — EVERY chart is an empty array and there are no results either.
+  // A single empty chart alongside real results or a populated chart is legitimate
+  // (that particular breakdown simply had no matching rows) — flagging it just
+  // burns a retry. Only flag when the step produced nothing chartable AND no
+  // scalar results: that's a genuinely degenerate output (usually a filter that
+  // matched zero rows).
+  const chartVals = chartKeys.map((k) => exec.chart_data[k]);
+  const allChartsEmpty =
+    chartVals.length > 0 && chartVals.every((v) => Array.isArray(v) && v.length === 0);
+  if (allChartsEmpty && resultKeys.length === 0) {
+    return {
+      ok: false,
+      code: "semantic_empty",
+      reason: "Every chart is empty and no results were computed.",
+      suggestedFix:
+        "Your filters likely matched no rows — print `df[col].unique()` and widen them. If the empty result is legitimate, record the finding in results (e.g. results['no_X_found'] = True) instead of emitting empty chart arrays.",
+    };
+  }
+
+  // Check #2 — null / NaN / "nan" / "None" scalar in results
+  // Note: only flag if it's the ONLY result; a single null among many
+  // valid keys is probably legitimate ("no data for this segment").
+  if (resultKeys.length === 1) {
+    const k = resultKeys[0];
+    const v = exec.results[k];
+    if (isDegenerateScalar(v)) {
+      return {
+        ok: false,
+        code: "semantic_null_result",
+        reason: `Result "${k}" is null/NaN — the computation produced no usable value.`,
+        suggestedFix:
+          "Inspect the inputs to that calculation. Common causes: empty filter, missing column, type coercion failure (e.g. summing strings).",
+      };
+    }
+  } else if (resultKeys.length > 1) {
+    // Multi-result case: only flag if EVERY value is degenerate
+    const allDegenerate = resultKeys.every((k) => isDegenerateScalar(exec.results[k]));
+    if (allDegenerate) {
+      return {
+        ok: false,
+        code: "semantic_null_result",
+        reason: "Every result value is null or NaN.",
+        suggestedFix:
+          "The computation chain produced no valid values. Check the data filter, then the aggregation, then the type coercions.",
+      };
+    }
+  }
+
+  // Check #5 — chart_data arrays where every numeric column is 0
+  // Skip single-row arrays (could legitimately be a "zero baseline" KPI)
+  // and only flag if length > 1, which strongly suggests a broken filter
+  // or aggregation that lost the magnitudes.
+  for (const k of chartKeys) {
+    const v = exec.chart_data[k];
+    if (Array.isArray(v) && v.length > 1 && isAllZeroRows(v)) {
+      return {
+        ok: false,
+        code: "semantic_all_zeros",
+        reason: `Chart "${k}" has only zero values across ${v.length} rows.`,
+        suggestedFix:
+          "The aggregation likely lost magnitudes — check whether you're summing the right column and whether the filter narrowed to a single bucket.",
+      };
+    }
+  }
+
+  return { ok: true };
+}
+
+/**
+ * Format a semantic verdict for inclusion in the retry prompt's
+ * attempt-history list. The string is plugged in where exception
+ * messages normally go.
+ */
+export function formatSemanticVerdictForRetry(verdict: ValidationVerdict): string {
+  if (verdict.ok) return "";
+  return `Semantic failure (no exception thrown but the result is degenerate):\n${verdict.reason}\nSuggested fix: ${verdict.suggestedFix}`;
+}

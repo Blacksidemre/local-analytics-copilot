@@ -40,6 +40,12 @@ def test_windows_launchers_enable_utf8_for_console_and_python():
     assert "Ollama hazır" in script
     assert "Docker Desktop kapalı" in script
     assert "Quick analiz çalışır" in script
+    assert "function Test-HybridFrontend" in script
+    assert 'Join-Path $RepoRoot "apps\\desktop"' in script
+    assert '$env:NEXT_PUBLIC_LAC_HYBRID = "1"' in script
+    assert "$env:LAC_BRIDGE_URL = $BackendUrl" in script
+    assert "Start-Process -FilePath $Pnpm" in script
+    assert "if (-not $NoBrowser) { Start-Process $AppUrl }" in script
     assert "hazÄ±r" not in script
     assert "kapalÄ±" not in script
     assert "Ã§alÄ±ÅŸÄ±r" not in script

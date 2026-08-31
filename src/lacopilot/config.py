@@ -86,6 +86,10 @@ class Settings(BaseSettings):
         return self.workspace / "actions.sqlite3"
 
     @property
+    def analysis_history_db(self) -> Path:
+        return self.workspace / "analysis_history.sqlite3"
+
+    @property
     def personalities_path(self) -> Path:
         return self.config_dir / "personalities.yaml"
 

@@ -1,0 +1,77 @@
+import { rmSync } from "fs";
+import { DEFAULT_LOCAL_LLM_ENDPOINTS } from "@/lib/constants";
+import { join, sep } from "path";
+import { apiError } from "@/app/lib/api-error";
+import { hermeticPaths } from "@/lib/paths";
+
+export async function POST(request: Request) {
+  const body = await request.json();
+  const { backend, model } = body;
+
+  if (!model) {
+    return Response.json({ error: "model is required" }, { status: 400 });
+  }
+
+  if (backend === "ollama") {
+    const { getRuntimeConfig } = await import("@/lib/runtime-config");
+    const rc = getRuntimeConfig();
+    const baseUrl = rc.ollama?.baseUrl || DEFAULT_LOCAL_LLM_ENDPOINTS.ollama;
+    try {
+      const res = await fetch(`${baseUrl}/api/delete`, {
+        method: "DELETE",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: model }),
+      });
+      if (!res.ok) {
+        return Response.json({ error: "Failed to delete model" }, { status: 502 });
+      }
+      return Response.json({ success: true });
+    } catch {
+      return Response.json({ error: "Cannot reach Ollama" }, { status: 502 });
+    }
+  }
+
+  if (backend === "mlx") {
+    // HuggingFace cache: ~/.cache/huggingface/hub/models--{org}--{name}
+    const cacheDir = join(
+      process.env.HF_HOME || join(process.env.HOME || "~", ".cache", "huggingface"),
+      "hub"
+    );
+    // model is like "mlx-community/Qwen2.5-Coder-14B-Instruct-4bit"
+    const dirName = `models--${model.replace(/\//g, "--")}`;
+    const fullPath = join(cacheDir, dirName);
+
+    try {
+      // Trailing-separator confinement (lib/local-files/security.ts pattern):
+      // a bare prefix check would pass sibling dirs like `${cacheDir}-evil`.
+      if (!fullPath.startsWith(cacheDir + sep)) {
+        return Response.json({ error: "Invalid model path" }, { status: 400 });
+      }
+      rmSync(fullPath, { recursive: true, force: true });
+      return Response.json({ success: true });
+    } catch (err) {
+      return apiError("/api/local-llm/delete", err, "Failed to delete model");
+    }
+  }
+
+  if (backend === "llama-cpp") {
+    // GGUF files in data/models/gguf/
+    // The model name might be a bare filename ("model.gguf") or a relative path
+    // from a HF download ("subdir/model.gguf")
+    const ggufDir = hermeticPaths.ggufModelsDir();
+    const fullPath = join(ggufDir, model);
+
+    try {
+      if (!fullPath.startsWith(ggufDir + sep)) {
+        return Response.json({ error: "Invalid model path" }, { status: 400 });
+      }
+      // Use recursive: true in case the model is in a subdirectory from HF download
+      rmSync(fullPath, { recursive: true, force: true });
+      return Response.json({ success: true });
+    } catch (err) {
+      return apiError("/api/local-llm/delete", err, "Failed to delete model");
+    }
+  }
+
+  return Response.json({ error: "Unknown backend" }, { status: 400 });
+}

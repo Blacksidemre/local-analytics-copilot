@@ -11,6 +11,23 @@ Amaç: hassas dosyaları varsayılan olarak bilgisayarınızda tutarken doğal d
 > `main` bu çalışma sırasında değiştirilmez. Mimari kararlar:
 > [`docs/HYBRID_ARCHITECTURE.md`](docs/HYBRID_ARCHITECTURE.md).
 
+Bu integration dalı artık iki repo gerektirmez: deterministik Python servisleri ve Hermetic'ten
+türetilen web/Tauri arayüzü aynı canonical repo içindedir. Kaynak arayüz
+[`apps/desktop`](apps/desktop) altında, üçüncü taraf lisansları ise
+[`THIRD-PARTY-NOTICES.md`](THIRD-PARTY-NOTICES.md) içinde korunur.
+
+Geliştirici için tek giriş noktaları:
+
+```powershell
+pnpm desktop:install  # yalnız ilk kurulumda
+pnpm dev              # birleşik tarayıcı deneyimi
+pnpm desktop:dev      # native Tauri geliştirme penceresi
+```
+
+`pnpm dev` ve `pnpm desktop:dev`, LAC backend'i ve arayüzü birlikte yönetir; sabit geliştirici yolu
+kullanmaz ve kendisinin başlatmadığı süreçleri kapatmaz. Kurulu Windows paketi henüz yayınlanmış
+değildir; native Tauri kabulü Visual C++ Build Tools bulunan gerçek Windows makinede tamamlanacaktır.
+
 > **Yayın durumu:** Bu sürüm bir release candidate'tır. Linux/Python 3.12 üzerinde lint, paketleme,
 > güvenlik ve deterministik analiz testleri doğrulanmıştır. Windows 11 + RTX 5070 Ti, gerçek Ollama
 > modelleri, Excel COM, canlı veritabanları ve OpenClaw entegrasyonu hedef bilgisayarda ayrıca
@@ -26,7 +43,8 @@ ile başlayın. Kısa yol:
 3. İlk kurulum için `.\scripts\install_windows.ps1` çalıştırın; `qwen3.5:9b` sorusuna `E`,
    ağır model sorusuna ilk kurulumda `H` deyin.
 4. Sonraki açılışlarda `Start_Local_Analytics_Copilot.cmd` dosyasına çift tıklayın. Launcher
-   Ollama, Docker ve backend durumunu kontrol eder, gerekiyorsa servisi başlatır ve tarayıcıyı açar.
+   Ollama, Docker, backend ve birleşik arayüz durumunu kontrol eder; gereken yerel süreçleri
+   başlatıp uygulamayı açar.
 
 `python` Windows aliası çalışmıyorsa kurucu otomatik olarak `py -3.12`, `py -3.13` ve
 `py -3.11` seçeneklerini dener.
@@ -194,9 +212,9 @@ lac benchmark-models
 .\Start_Local_Analytics_Copilot.cmd
 ```
 
-Tarayıcı:
+Birleşik arayüz: `http://127.0.0.1:3000`
 
-`http://127.0.0.1:8765`
+Data Bridge API: `http://127.0.0.1:8765`
 
 Ayarlar:
 

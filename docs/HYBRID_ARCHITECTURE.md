@@ -1,11 +1,12 @@
 # Hermetic Hybrid Architecture
 
-Status: frozen for Milestone 1 on `hermetic-hybrid-integration`
+Status: canonical single-repository architecture on `hermetic-hybrid-integration`
 Decision date: 2026-08-29
 
 ## Product boundary
 
-The hybrid is two cooperating local processes, not a blind codebase merge:
+The product is one canonical repository and one launcher, with two cooperating local processes
+inside the desktop boundary:
 
 ```text
 Hermetic-derived Next/Tauri UI
@@ -20,7 +21,8 @@ LAC Deterministic Data Bridge + Analytics API
         +-- local Ollama interpretation
 ```
 
-Hermetic owns product interaction and visualization. LAC owns ingestion truth, calculations,
+The Hermetic-derived source now lives in `apps/desktop` with its original licenses and notices.
+It owns product interaction and visualization. LAC owns ingestion truth, calculations,
 business rules, and claim evidence. The language model may plan and explain; it is not the source
 of row counts, missing counts, duplicate counts, KPIs, statistical results, or benchmarks.
 
@@ -40,10 +42,10 @@ replacement/build work.
 
 | Capability | Decision | Owner for the hybrid |
 |---|---|---|
-| Product UI, history UX, artifact viewer | BORROW | Hermetic fork |
-| Charts, dashboard composer, findings presentation | BORROW + HARDEN | Hermetic fork |
-| Tauri desktop packaging and sidecar pattern | BORROW | Hermetic fork |
-| Docker sandbox UX/runtime | BORROW | Hermetic fork |
+| Product UI, history UX, artifact viewer | BORROW | `apps/desktop` in canonical LAC repo |
+| Charts, dashboard composer, findings presentation | BORROW + HARDEN | `apps/desktop` |
+| Tauri desktop packaging and sidecar pattern | BORROW | `apps/desktop/src-tauri` |
+| Docker sandbox UX/runtime | BORROW | `apps/desktop/docker` |
 | CSV/XLSX/XLSM/Parquet ingestion truth | REPLACE | LAC Data Bridge |
 | Shape, schema, missing, duplicates, summaries, date ranges | KEEP + EXTEND | LAC |
 | Statistics, DuckDB, business and NPL analytics | KEEP | LAC |
@@ -58,10 +60,10 @@ replacement/build work.
 ## Why the boundary is HTTP
 
 - The Python analytics core stays independently testable and usable by CLI.
-- The TypeScript/Tauri UI can track upstream Hermetic without copying its full source into this repo.
+- Python and TypeScript remain independently testable even though their sources ship together.
 - Both services remain localhost-only and can be packaged as desktop sidecars later.
 - A versioned contract prevents UI schema drift from changing analytical meaning.
-- The future `Blacksidemre/hermetic` fork can consume LAC without weakening LAC's security boundary.
+- The previous Hermetic fork is now a reference/history source, not a runtime or clone dependency.
 
 ## Bridge API v1
 
@@ -72,6 +74,10 @@ replacement/build work.
 | `GET /api/v1/datasets/manifest` | Deterministic CSV dialect or Excel sheet discovery |
 | `POST /api/v1/datasets/profile` | Deterministic profile for an existing workspace file |
 | `POST /api/v1/analysis/quick` | Profile plus optional local-Qwen interpretation |
+| `POST /api/v1/analysis/analyst` | Deterministic target-aware statistics and verifier |
+| `POST /api/v1/analysis/agent` | Bounded local planner, typed tools, verifier and synthesis |
+| `GET/DELETE /api/v1/analysis/history/...` | Local verified-finding archive and deletion |
+| `POST /api/v1/analysis/analyst/report/...` | Verified Excel, HTML and PDF reports |
 
 Browser access is limited to configured localhost/Tauri origins. The existing optional API token
 continues to protect every `/api/` route when enabled.
@@ -113,6 +119,9 @@ Excel/PDF/HTML validation → Qwen explanation.
 Planner → bounded typed tools → executor → deterministic verifier → tool-less final synthesis.
 Required controls include duplicate-call blocking, failure budget, goal completion, evidence binding,
 and a guaranteed final-answer reserve.
+
+The bounded planner/runtime, Agent API/UI and adversarial suite are implemented. Milestone 3 remains
+partial until a live local-Ollama Agent run and the packaged Windows Tauri path pass physical E2E.
 
 ## Non-negotiable release rules
 

@@ -1,0 +1,224 @@
+import { describe, it, expect, vi } from "vitest";
+import {
+  runWithCostTracking,
+  getCostAccumulator,
+  recordCall,
+  computeCost,
+  withPhase,
+  withPhaseSync,
+  formatPhaseBreakdown,
+} from "@/lib/cost/accumulator";
+import { MODEL_PRICING, AVAILABLE_MODELS } from "@/lib/constants";
+import { logger } from "@/lib/logger";
+
+const OUT = (n: number) => ({
+  uncachedInputTokens: 0,
+  cacheReadTokens: 0,
+  cacheWriteTokens: 0,
+  outputTokens: n,
+});
+
+describe("unpriced models (finding L7 — silent $0)", () => {
+  it("warns once when a model is missing from MODEL_PRICING instead of silently pricing at $0", async () => {
+    const warn = vi.spyOn(logger, "warn").mockImplementation(() => {});
+    const unlisted = "totally-unlisted-model-xyz";
+    const summary = await runWithCostTracking(async () => {
+      recordCall(unlisted, OUT(1_000_000));
+      recordCall(unlisted, OUT(1_000_000)); // second call must NOT re-warn
+      return computeCost(getCostAccumulator()!);
+    });
+    expect(summary.costUsd).toBe(0); // still $0 (tokens counted), but now visible
+    const unpricedWarns = warn.mock.calls.filter((c) => String(c[0]).includes("Unpriced model"));
+    expect(unpricedWarns.length).toBe(1);
+    expect(unpricedWarns[0][1]).toMatchObject({ modelId: unlisted });
+    warn.mockRestore();
+  });
+});
+
+describe("computeCost / recordCall", () => {
+  it("prices input and output tokens at the model's rate", async () => {
+    const summary = await runWithCostTracking(async () => {
+      recordCall("claude-sonnet-4-6", {
+        uncachedInputTokens: 1_000_000,
+        cacheReadTokens: 0,
+        cacheWriteTokens: 0,
+        outputTokens: 1_000_000,
+      });
+      return computeCost(getCostAccumulator()!);
+    });
+    // 1M input @ $3 + 1M output @ $15
+    expect(summary.costUsd).toBeCloseTo(18, 6);
+    expect(summary.inputTokens).toBe(1_000_000);
+    expect(summary.outputTokens).toBe(1_000_000);
+    expect(summary.llmCalls).toBe(1);
+    expect(summary.models).toEqual(["claude-sonnet-4-6"]);
+  });
+
+  it("prices cache read and cache write at their own rates", async () => {
+    const summary = await runWithCostTracking(async () => {
+      recordCall("claude-sonnet-4-6", {
+        uncachedInputTokens: 0,
+        cacheReadTokens: 1_000_000,
+        cacheWriteTokens: 1_000_000,
+        outputTokens: 0,
+      });
+      return computeCost(getCostAccumulator()!);
+    });
+    // 1M cache read @ $0.30 + 1M cache write @ $6.00 (1h TTL = 2× input)
+    expect(summary.costUsd).toBeCloseTo(6.3, 6);
+    expect(summary.cacheReadTokens).toBe(1_000_000);
+    expect(summary.cacheWriteTokens).toBe(1_000_000);
+    expect(summary.inputTokens).toBe(2_000_000); // total includes cache buckets
+  });
+
+  it("sums across multiple calls and models", async () => {
+    const summary = await runWithCostTracking(async () => {
+      recordCall("claude-haiku-4-5-20251001", {
+        uncachedInputTokens: 1_000_000,
+        cacheReadTokens: 0,
+        cacheWriteTokens: 0,
+        outputTokens: 0,
+      }); // $1
+      recordCall("claude-sonnet-4-6", {
+        uncachedInputTokens: 0,
+        cacheReadTokens: 0,
+        cacheWriteTokens: 0,
+        outputTokens: 1_000_000,
+      }); // $15
+      return computeCost(getCostAccumulator()!);
+    });
+    expect(summary.costUsd).toBeCloseTo(16, 6);
+    expect(summary.llmCalls).toBe(2);
+    expect(summary.models.sort()).toEqual(["claude-haiku-4-5-20251001", "claude-sonnet-4-6"]);
+  });
+
+  it("treats an unknown/local model as $0 but still counts its tokens", async () => {
+    const summary = await runWithCostTracking(async () => {
+      recordCall("qwen2.5-coder:14b", {
+        uncachedInputTokens: 5_000_000,
+        cacheReadTokens: 0,
+        cacheWriteTokens: 0,
+        outputTokens: 2_000_000,
+      });
+      return computeCost(getCostAccumulator()!);
+    });
+    expect(summary.costUsd).toBe(0);
+    expect(summary.inputTokens).toBe(5_000_000);
+    expect(summary.outputTokens).toBe(2_000_000);
+  });
+
+  it("computeCost of an empty accumulator is all zeros", () => {
+    const s = computeCost({ calls: [], startedAt: Date.now() });
+    expect(s).toMatchObject({
+      costUsd: 0,
+      inputTokens: 0,
+      cacheReadTokens: 0,
+      cacheWriteTokens: 0,
+      outputTokens: 0,
+      llmCalls: 0,
+      models: [],
+      byPhase: [],
+      llmMs: 0,
+    });
+    expect(s.wallMs).toBeGreaterThanOrEqual(0);
+  });
+
+  it("recordCall is a no-op outside a tracked scope", () => {
+    expect(getCostAccumulator()).toBeUndefined();
+    expect(() =>
+      recordCall("claude-sonnet-4-6", {
+        uncachedInputTokens: 1,
+        cacheReadTokens: 0,
+        cacheWriteTokens: 0,
+        outputTokens: 1,
+      })
+    ).not.toThrow();
+  });
+});
+
+describe("per-phase attribution", () => {
+  it("tags calls with their withPhase scope and rolls them up by phase", async () => {
+    const summary = await runWithCostTracking(async () => {
+      await withPhase("code_gen", async () => {
+        recordCall("claude-sonnet-4-6", OUT(1000));
+        recordCall("claude-sonnet-4-6", OUT(500));
+      });
+      withPhaseSync("compose", () => recordCall("claude-sonnet-4-6", OUT(4000)));
+      return computeCost(getCostAccumulator()!);
+    });
+    const phases = Object.fromEntries(summary.byPhase.map((p) => [p.phase, p]));
+    expect(phases.code_gen.outputTokens).toBe(1500);
+    expect(phases.code_gen.llmCalls).toBe(2);
+    expect(phases.compose.outputTokens).toBe(4000);
+    // sorted by cost descending — compose (4000 out) outranks code_gen (1500)
+    expect(summary.byPhase[0].phase).toBe("compose");
+  });
+
+  it("labels calls outside any withPhase scope as 'other'", async () => {
+    const summary = await runWithCostTracking(async () => {
+      recordCall("claude-sonnet-4-6", OUT(100));
+      return computeCost(getCostAccumulator()!);
+    });
+    expect(summary.byPhase.map((p) => p.phase)).toEqual(["other"]);
+  });
+
+  it("an explicit phase arg overrides the ambient scope (middleware path)", async () => {
+    const summary = await runWithCostTracking(async () => {
+      await withPhase("code_gen", async () => {
+        // The middleware captures phase at request start and passes it through;
+        // simulate a streamed call whose phase is bound explicitly.
+        recordCall("claude-sonnet-4-6", OUT(200), "compose");
+      });
+      return computeCost(getCostAccumulator()!);
+    });
+    expect(summary.byPhase.map((p) => p.phase)).toEqual(["compose"]);
+  });
+
+  it("formatPhaseBreakdown renders a compact one-liner", () => {
+    const s = formatPhaseBreakdown([
+      {
+        phase: "compose",
+        llmCalls: 1,
+        inputTokens: 100,
+        outputTokens: 4000,
+        costUsd: 0.06,
+        durationMs: 8200,
+      },
+    ]);
+    expect(s).toBe("compose=$0.0600(out:4000,calls:1,ms:8200)");
+  });
+
+  it("rolls per-call durations up by phase and in llmMs", async () => {
+    const summary = await runWithCostTracking(async () => {
+      await withPhase("code_gen", async () => {
+        recordCall("claude-sonnet-4-6", { ...OUT(1000), durationMs: 1200 });
+        recordCall("claude-sonnet-4-6", { ...OUT(500), durationMs: 800 });
+      });
+      return computeCost(getCostAccumulator()!);
+    });
+    const codeGen = summary.byPhase.find((p) => p.phase === "code_gen")!;
+    expect(codeGen.durationMs).toBe(2000);
+    expect(summary.llmMs).toBe(2000);
+  });
+});
+
+describe("MODEL_PRICING", () => {
+  it("covers every paid model in AVAILABLE_MODELS", () => {
+    for (const m of AVAILABLE_MODELS) {
+      expect(MODEL_PRICING[m.id], `missing pricing for ${m.id}`).toBeDefined();
+    }
+  });
+
+  it("cache-write is 2x input (1h TTL) and cache-read is 0.1x input", () => {
+    for (const p of Object.values(MODEL_PRICING)) {
+      expect(p.cacheWrite).toBeCloseTo(p.input * 2, 6);
+      expect(p.cacheRead).toBeCloseTo(p.input * 0.1, 6);
+    }
+  });
+
+  // Regression guard: Opus 4.x is $5/$25 per MTok — NOT the Claude 3 Opus
+  // $15/$75 rate that was previously (wrongly) hard-coded.
+  it("prices Opus at the 4.x rate ($5 in / $25 out)", () => {
+    expect(MODEL_PRICING["claude-opus-4-8"]).toMatchObject({ input: 5, output: 25 });
+  });
+});

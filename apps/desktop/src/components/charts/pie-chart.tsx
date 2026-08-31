@@ -1,0 +1,207 @@
+"use client";
+
+import { useMemo } from "react";
+import { ResponsivePie } from "@nivo/pie";
+import {
+  resolveColors,
+  useChartColors,
+  useNivoTheme,
+  unwrapChartData,
+  useReducedMotion,
+} from "@/components/theme/chart-theme";
+import { useThemeConfig } from "@/components/theme/theme-config";
+import { useChartExpanded } from "./chart-expand-wrapper";
+import { useDrillClickRef } from "@/components/drill-down-context";
+import { CLICK_PRIMARY } from "@/lib/drill-resolve";
+import { ChartEmptyState } from "./chart-empty-state";
+
+interface PieChartProps {
+  title?: string | null;
+  data: { label: string; value: number }[];
+  show_labels?: boolean | null;
+  show_legend?: boolean | null;
+  donut?: boolean | null;
+  colors?: string[] | null;
+  selects?: { column: string; bindTo: string } | null;
+}
+
+interface EventHandle {
+  emit: () => void;
+  bound: boolean;
+  shouldPreventDefault: boolean;
+}
+
+/**
+ * Normalize LLM-shaped rows to nivo pie data: accept `label`/`value` keys or
+ * infer them (first string-ish → label, first number-ish → value), round to
+ * 2dp, and de-duplicate ids with an index suffix (React key warnings). Pure —
+ * extracted for unit tests and memoization (perf P10); the dedup is O(n) via a
+ * counting map (was O(n²): a slice+filter scan per row), with byte-identical
+ * "(2)", "(3)"… suffixing.
+ */
+export function normalizePieData(
+  rawData: Record<string, unknown>[]
+): { id: string; value: number }[] {
+  const normalized = rawData
+    .map((d) => {
+      if (d.label !== undefined && d.value !== undefined) {
+        return { id: String(d.label), value: Math.round(Number(d.value) * 100) / 100 };
+      }
+      const entries = Object.entries(d as Record<string, unknown>);
+      let label: string | undefined;
+      let value: number | undefined;
+      for (const [, v] of entries) {
+        if (label === undefined && typeof v === "string") label = v;
+        if (value === undefined && typeof v === "number") value = v;
+      }
+      if (label !== undefined && value !== undefined) {
+        return { id: label, value: Math.round(value * 100) / 100 };
+      }
+      return null;
+    })
+    .filter((d): d is { id: string; value: number } => d !== null && !isNaN(d.value));
+  const seen = new Map<string, number>();
+  return normalized.map((d) => {
+    const n = seen.get(d.id) ?? 0;
+    seen.set(d.id, n + 1);
+    return n > 0 ? { ...d, id: `${d.id} (${n + 1})` } : d;
+  });
+}
+
+export function PieChartComponent({
+  props,
+  emit,
+  on,
+  selectedValues = [],
+  onSelect,
+}: {
+  props: PieChartProps;
+  emit?: (event: string) => void;
+  on?: (event: string) => EventHandle;
+  selectedValues?: string[];
+  onSelect?: (value: string) => void;
+}) {
+  const drillClickValueRef = useDrillClickRef();
+  const reducedMotion = useReducedMotion();
+  const isSelectable = !!onSelect;
+  const clickHandle = on?.("click");
+  const isDrillable = !isSelectable && (clickHandle?.bound ?? false);
+  const baseTheme = useNivoTheme();
+  const tc = useThemeConfig();
+  const { chart } = tc;
+  const isExpanded = useChartExpanded();
+
+  // Pie needs smaller label text than bar/line charts to avoid clipping
+  const theme = useMemo(
+    () => ({
+      ...baseTheme,
+      labels: { text: { fontSize: 11, fill: baseTheme.text?.fill as string } },
+    }),
+    [baseTheme]
+  );
+
+  const rawData = unwrapChartData(props.data);
+
+  // Memoized (perf P10) — and the id-dedup is now O(n) via a counting map
+  // (was O(n²): a slice+filter scan per row), byte-identical suffixing.
+  const nivoData = useMemo(() => normalizePieData(rawData), [rawData]);
+
+  const themeColors = useChartColors();
+  const baseColors = props.colors
+    ? resolveColors(props.colors)
+    : themeColors.slice(0, nivoData.length);
+
+  // When a selection is active, dim unselected slices via hex alpha suffix
+  const colors =
+    isSelectable && selectedValues.length > 0
+      ? (datum: { id: string | number }) => {
+          const idx = nivoData.findIndex((d) => d.id === datum.id);
+          const baseColor = baseColors[idx >= 0 ? idx : 0];
+          return selectedValues.includes(String(datum.id)) ? baseColor : baseColor + "40"; // 25% opacity
+        }
+      : baseColors;
+
+  if (nivoData.length === 0) {
+    return <ChartEmptyState height={chart.height} />;
+  }
+
+  return (
+    <div
+      className={`w-full${isDrillable || isSelectable ? " cursor-pointer" : ""}${isExpanded ? " h-full flex flex-col" : ""}`}
+    >
+      {props.title && (
+        <h3
+          className="mb-2 text-t-secondary"
+          style={{ fontSize: "var(--chart-title-size)", fontWeight: "var(--chart-title-weight)" }}
+        >
+          {props.title}
+          {isDrillable && (
+            <span className="ml-2 text-xs font-normal text-accent">Click to drill down</span>
+          )}
+          {isSelectable && selectedValues.length === 0 && (
+            <span className="ml-2 text-xs font-normal text-t-tertiary">Click to filter</span>
+          )}
+        </h3>
+      )}
+      <div
+        className={isExpanded ? "flex-1" : ""}
+        style={{ height: isExpanded ? undefined : chart.height }}
+      >
+        <ResponsivePie
+          animate={!reducedMotion}
+          data={nivoData}
+          colors={colors}
+          innerRadius={props.donut ? 0.5 : 0}
+          padAngle={chart.piePadAngle}
+          cornerRadius={chart.pieCornerRadius}
+          margin={{ top: 20, right: 80, bottom: props.show_legend ? 60 : 40, left: 80 }}
+          theme={theme}
+          activeId={isSelectable && selectedValues.length > 0 ? selectedValues[0] : undefined}
+          activeOuterRadiusOffset={isSelectable && selectedValues.length > 0 ? 8 : undefined}
+          enableArcLabels={props.show_labels ?? false}
+          enableArcLinkLabels={props.show_labels ?? true}
+          arcLabelsSkipAngle={15}
+          arcLabel={(d) => {
+            const v = d.value;
+            return Number.isInteger(v) ? String(v) : v.toFixed(1);
+          }}
+          arcLinkLabelsSkipAngle={12}
+          arcLinkLabelsDiagonalLength={16}
+          arcLinkLabelsStraightLength={16}
+          arcLinkLabelsTextOffset={4}
+          arcLinkLabelsThickness={1}
+          arcLinkLabelsColor={{ from: "color" }}
+          arcLinkLabelsTextColor={theme.text?.fill as string}
+          legends={
+            props.show_legend
+              ? [
+                  {
+                    anchor: "bottom",
+                    direction: "row",
+                    translateY: 36,
+                    itemWidth: 100,
+                    itemHeight: 18,
+                    symbolSize: chart.legendSymbolSize,
+                    symbolShape: "circle",
+                  },
+                ]
+              : []
+          }
+          onClick={
+            isSelectable
+              ? (datum) => onSelect(String(datum.id))
+              : isDrillable
+                ? (datum) => {
+                    // A pie slice knows its label but not the underlying column
+                    // name, so capture it under the primary sentinel — the drill
+                    // callback falls back to it when a column lookup misses.
+                    drillClickValueRef.current = { [CLICK_PRIMARY]: String(datum.id) };
+                    emit?.("click");
+                  }
+                : undefined
+          }
+        />
+      </div>
+    </div>
+  );
+}

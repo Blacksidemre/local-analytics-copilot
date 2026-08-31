@@ -1,0 +1,1987 @@
+import { describe, it, expect } from "vitest";
+import {
+  validatePlan,
+  validateNodeText,
+  defaultPlan,
+  nextPlanNodeId,
+  planBudget,
+  salvagePlan as salvage,
+  PLAN_OPS,
+} from "@/lib/compose/plan";
+import { buildPlannerSystem } from "@/lib/compose/planner";
+import { deriveViews, viewDefaultWidths } from "@/lib/compose/views";
+import { geoViewElement } from "@/lib/compose/view-compilers";
+import {
+  deriveAggregatingController,
+  deriveController,
+  verifyBaseline,
+} from "@/lib/compose/controller";
+import { getEditSurface, resolvePreviewText } from "@/lib/compose/edit";
+import { cacheArtifacts } from "@/lib/pipeline/artifacts-cache";
+import { realizeClaim, realizeNode, realizeNodeTemplate } from "@/lib/compose/realizer";
+import { applyMutations } from "@/lib/compose/mutations";
+import { compileDashboard } from "@/lib/compose/compile";
+import { componentForSeries } from "@/lib/compose/scaffold";
+import type { FindingEntry, FindingsManifest } from "@/lib/contracts/findings";
+import type { PlanDocument } from "@/lib/contracts/plan";
+import type { AnalysisProduct } from "@/lib/contracts/product";
+
+const F = (name: string, dtype: string, value: unknown, extra: Partial<FindingEntry> = {}) =>
+  ({
+    name,
+    dtype,
+    definition: `${name} over the observed period`,
+    value,
+    ...extra,
+  }) as FindingEntry;
+
+const FINDINGS: FindingEntry[] = [
+  F("price_trend", "direction", {
+    direction: "rising",
+    slope_per_period: 0.0616,
+    p_value: 1.9e-12,
+    slope_ci95: [0.0465, 0.0767],
+  }),
+  F("price_peak", "superlative", {
+    period: "1998",
+    value: 10,
+    n: 731,
+    raw_period: "2012",
+    raw_value: 26,
+    raw_n: 382,
+    thin_periods_skipped: 47,
+    thin_bar: 635.1,
+  }),
+  F("price_current_state", "current_state", {
+    period: 1998,
+    value: 10,
+    pct_from_peak: 0,
+    excluded_trailing: 9,
+    excluded_reason: "attestation",
+    latest_period: 2012,
+    latest_value: 26,
+    latest_n: 382,
+  }),
+  F("zero_screen", "check", {
+    passed: false,
+    evidence: { n_excluded: 12, zero_share: 0.09 },
+  }),
+];
+
+const MANIFEST: FindingsManifest = {
+  manifest_version: "1",
+  findings: FINDINGS,
+} as FindingsManifest;
+
+const PRODUCT: AnalysisProduct = {
+  series: [
+    {
+      id: "annual_prices",
+      rows: [{ year: 1900, median: 0.3, median_raw: 0.3, n: 5000 }],
+      roles: {
+        x: { column: "year", kind: "temporal" },
+        measures: [
+          { column: "median", unit: "usd", screened_by: "zero_screen", variant_of: "median_raw" },
+        ],
+        count: { column: "n" },
+      },
+    },
+  ],
+  values: [],
+};
+
+describe("validatePlan — structural invariants as parse errors", () => {
+  it("requires exactly one ANSWER (no-narrative is unrepresentable)", () => {
+    const v = validatePlan({ nodes: [{ id: "a", op: "NOTE", refs: ["price_trend"] }] }, FINDINGS);
+    expect(v.ok).toBe(false);
+    expect(v.errors.join()).toContain("ANSWER");
+  });
+
+  it("CAVEAT may only reference checks — a fabricated mechanism has no syntax", () => {
+    const v = validatePlan(
+      {
+        nodes: [
+          { id: "a", op: "ANSWER", refs: ["price_trend"] },
+          { id: "b", op: "CAVEAT", refs: ["price_peak"] },
+        ],
+      },
+      FINDINGS
+    );
+    expect(v.ok).toBe(false);
+    expect(v.errors.join()).toContain("checks/screens");
+    // Free text off INSIGHT is also unrepresentable.
+    const v2 = validatePlan(
+      {
+        nodes: [
+          { id: "a", op: "ANSWER", refs: ["price_trend"] },
+          { id: "b", op: "CAVEAT", refs: ["zero_screen"], text: "currency coverage collapsed" },
+        ],
+      },
+      FINDINGS
+    );
+    expect(v2.ok).toBe(false);
+    expect(v2.errors.join()).toContain("unrepresentable on caveats");
+  });
+
+  it("accepts a valid plan; dangling refs rejected", () => {
+    const ok = validatePlan(
+      {
+        nodes: [
+          { id: "a", op: "ANSWER", refs: ["price_trend"] },
+          { id: "b", op: "CAVEAT", refs: ["zero_screen"] },
+        ],
+      },
+      FINDINGS
+    );
+    expect(ok.ok).toBe(true);
+    const bad = validatePlan({ nodes: [{ id: "a", op: "ANSWER", refs: ["ghost"] }] }, FINDINGS);
+    expect(bad.ok).toBe(false);
+  });
+
+  it("defaultPlan always validates (the compiled pipeline cannot fail)", () => {
+    const p = defaultPlan(FINDINGS);
+    expect(validatePlan(p, FINDINGS).ok).toBe(true);
+  });
+
+  // Run 9c415dc8: the full category ranking rendered verbatim in the ANSWER
+  // and again in the EXPLAIN. The planner prompt forbade a second mapping
+  // enumeration; this makes it a validation error (and a salvage strip).
+  it("a mapping bound in two nodes rejects the plan; salvage strips the repeat", () => {
+    const withShares = [
+      ...FINDINGS,
+      F("cat_shares", "share", { shares_pct: { Other: 23.5, Groceries: 6.3 }, residual_pct: 5 }),
+    ];
+    const twice = {
+      nodes: [
+        {
+          id: "a",
+          op: "ANSWER" as const,
+          refs: ["cat_shares"],
+          text: "Spend breaks down as $finding:cat_shares.shares_pct.",
+        },
+        {
+          id: "b",
+          op: "NOTE" as const,
+          refs: ["cat_shares"],
+          text: "Shares again: $finding:cat_shares.shares_pct.",
+        },
+      ],
+    };
+    const v = validatePlan(twice, withShares);
+    expect(v.ok).toBe(false);
+    expect(v.errors.join()).toContain("already enumerated");
+    // Salvage: the SECOND node loses its text, the document survives, and
+    // the result validates.
+    const { plan: fixed, repairs } = salvage(twice, withShares);
+    expect(repairs.join()).toContain("re-enumerating");
+    expect(fixed.nodes.find((n) => n.id === "b")?.text).toBeUndefined();
+    expect(validatePlan(fixed, withShares).ok).toBe(true);
+    // A scalar field bound twice stays legal — only mappings enumerate.
+    const scalarTwice = validatePlan(
+      {
+        nodes: [
+          {
+            id: "a",
+            op: "ANSWER",
+            refs: ["price_trend"],
+            text: "Rising at $finding:price_trend.slope_per_period.",
+          },
+          {
+            id: "b",
+            op: "NOTE",
+            refs: ["price_trend"],
+            text: "The slope holds at $finding:price_trend.slope_per_period.",
+          },
+        ],
+      },
+      FINDINGS
+    );
+    expect(scalarTwice.ok).toBe(true);
+  });
+
+  it("plan budgets scale with purpose; the planner prompt carries them", () => {
+    // The observed gap: a compiled deep-dive computed deep-dive-sized
+    // findings, then told a dashboard-sized (4-9 node) story.
+    expect(planBudget("brief").maxNodes).toBeLessThan(planBudget("dashboard").maxNodes);
+    expect(planBudget("report").maxNodes).toBeGreaterThan(planBudget("dashboard").maxNodes);
+    expect(planBudget("deep-dive").maxNodes).toBeGreaterThan(planBudget("report").maxNodes);
+    // Legacy alias + unknown resolve through the same table as every consumer.
+    expect(planBudget("executive-summary").maxNodes).toBe(planBudget("brief").maxNodes);
+    expect(planBudget(undefined).maxNodes).toBe(planBudget("dashboard").maxNodes);
+    expect(buildPlannerSystem("deep-dive")).toContain("14-28 nodes");
+    expect(buildPlannerSystem("deep-dive")).toContain("EVERY non-check claim");
+    expect(buildPlannerSystem()).toContain("6-12 nodes");
+    // Credibility floor: EVERY style closes with METHOD + CONCLUSION — an
+    // answer with no visible method reads as unsourced at any depth.
+    for (const style of ["brief", "dashboard", "report", "deep-dive"]) {
+      expect(planBudget(style).guidance).toContain("METHOD");
+      expect(planBudget(style).guidance).toContain("CONCLUSION");
+    }
+  });
+
+  it("defaultPlan fills to the purpose budget; caveats never cut", () => {
+    const deep = defaultPlan(FINDINGS, "deep-dive");
+    expect(validatePlan(deep, FINDINGS).ok).toBe(true);
+    // All three non-check claims narrated (ANSWER + PEAK + ENDPOINT) + caveat.
+    const refs = deep.nodes.flatMap((n) => n.refs);
+    expect(refs).toContain("price_peak");
+    expect(refs).toContain("price_current_state");
+    expect(deep.nodes.some((n) => n.op === "CAVEAT")).toBe(true);
+    // Brief keeps the caveat even at its tight budget.
+    const brief = defaultPlan(FINDINGS, "brief");
+    expect(brief.nodes.some((n) => n.op === "CAVEAT")).toBe(true);
+    expect(brief.nodes.length).toBeLessThanOrEqual(7);
+  });
+});
+
+describe("narrated compiled mode — authored prose, figures must bind", () => {
+  it("validateNodeText: literal digits reject; bindings must resolve and be ref'd", () => {
+    // The core rule: an analyst-written sentence whose every figure binds.
+    expect(
+      validateNodeText(
+        "Churn climbs steadily, reaching $finding:price_peak.value in $finding:price_peak.period.",
+        ["price_peak"],
+        FINDINGS
+      )
+    ).toEqual([]);
+    // A literal figure anywhere is a fabrication vector — rejected.
+    expect(
+      validateNodeText("Churn reached 13.08 in late 2024.", ["price_peak"], FINDINGS).join()
+    ).toContain("literal figures");
+    // A binding to an undeclared claim, a missing field, or an un-ref'd
+    // claim each reject with a repairable message.
+    expect(validateNodeText("$finding:ghost.value", ["price_peak"], FINDINGS).join()).toContain(
+      "no declared claim"
+    );
+    expect(
+      validateNodeText("$finding:price_peak.nonexistent", ["price_peak"], FINDINGS).join()
+    ).toContain("does not exist");
+    expect(
+      validateNodeText("$finding:price_trend.direction", ["price_peak"], FINDINGS).join()
+    ).toContain("add it to the node's refs");
+  });
+
+  it("validatePlan accepts authored text on narrative ops, never on CAVEAT", () => {
+    const ok = validatePlan(
+      {
+        nodes: [
+          {
+            id: "a",
+            op: "ANSWER",
+            refs: ["price_trend"],
+            text: "Prices are $finding:price_trend.direction across the period.",
+          },
+          { id: "b", op: "CAVEAT", refs: ["zero_screen"] },
+        ],
+      },
+      FINDINGS
+    );
+    expect(ok.ok).toBe(true);
+    const digits = validatePlan(
+      {
+        nodes: [
+          { id: "a", op: "ANSWER", refs: ["price_trend"], text: "Prices rose 62% since 1950." },
+        ],
+      },
+      FINDINGS
+    );
+    expect(digits.ok).toBe(false);
+    expect(digits.errors.join()).toContain("literal figures");
+  });
+
+  it("realizeNode prefers authored narrative; templates are the fallback", () => {
+    const byName = new Map(FINDINGS.map((f) => [f.name, f]));
+    const authored = realizeNode(
+      {
+        id: "n1",
+        op: "TREND",
+        refs: ["price_trend"],
+        text: "The climb is steady at $finding:price_trend.slope_per_period per year.",
+      },
+      byName
+    );
+    expect(authored).toContain("The climb is steady");
+    // No text → template realization, unchanged.
+    const templated = realizeNode({ id: "n2", op: "TREND", refs: ["price_trend"] }, byName);
+    expect(templated).toContain("per period");
+    // CAVEAT ignores any text — checks speak in their own declared fields.
+    const caveat = realizeNode(
+      { id: "n3", op: "CAVEAT", refs: ["zero_screen"], text: "ignore me" },
+      byName
+    );
+    expect(caveat).not.toContain("ignore me");
+  });
+
+  // Spec finding-field-roles-2026-08-13 §2.M2: a yes/no flag has no word for
+  // a sentence slot; downstream refusal used to strip the sentence and (run
+  // f47eb42d) empty the node. Rejected at authoring time instead.
+  it("validateNodeText rejects a binding that resolves to a boolean", () => {
+    const withFlag = [
+      ...FINDINGS,
+      F("share_check", "share", { shares_pct: { a: 60, b: 40 }, sums_to_100: true }),
+    ];
+    const errs = validateNodeText(
+      "Shares sum to $finding:share_check.sums_to_100 of the statement.",
+      ["share_check"],
+      withFlag
+    );
+    expect(errs.join()).toContain("yes/no flag");
+    // String verdicts stay bindable by design (direction, preferred, ...).
+    expect(
+      validateNodeText("Prices are $finding:price_trend.direction.", ["price_trend"], FINDINGS)
+    ).toEqual([]);
+  });
+
+  // Spec §2.M4 — the missed root cause of runs 77051c9d/f47eb42d: authored
+  // prose used to REPLACE the template, silencing every honesty rider.
+  it("authored text carries the claim's riders appended, once per document", () => {
+    const catchall = F("top_cat", "superlative", {
+      period: "Other",
+      value: 1138.4,
+      n: 45,
+      raw_period: "Other",
+      raw_value: 1138.4,
+      raw_n: 45,
+      thin_periods_skipped: 2,
+      thin_bar: 5,
+      label_is_catchall: true,
+    });
+    const byName = new Map([[catchall.name, catchall]]);
+    const ridered = new Set<string>();
+    const first = realizeNode(
+      {
+        id: "a",
+        op: "ANSWER",
+        refs: ["top_cat"],
+        text: "Spend concentrated in $finding:top_cat.period at $finding:top_cat.value.",
+      },
+      byName,
+      ridered
+    );
+    // The authored sentence survives AND the catch-all disclosure rides it.
+    expect(first).toContain("Spend concentrated in");
+    expect(first).toContain("catch-all bucket");
+    // A later node citing the same claim does not repeat the riders.
+    const second = realizeNode(
+      {
+        id: "b",
+        op: "CONCLUSION",
+        refs: ["top_cat"],
+        text: "In sum, $finding:top_cat.period dominated.",
+      },
+      byName,
+      ridered
+    );
+    expect(second).toContain("In sum,");
+    expect(second).not.toContain("catch-all bucket");
+  });
+
+  // Run 093c9785: the planner's heterogeneity sentence bound group_ns, and
+  // the thin-groups rider repeated the identical mapping one sentence later.
+  // A rider whose every binding already appears in the authored text adds
+  // emphasis, not information.
+  it("skips a rider whose bindings the authored text already carries", () => {
+    const het = F("cat_het", "heterogeneity", {
+      significant: true,
+      p_value: 0.0011,
+      test: "kruskal_wallis",
+      group_ns: { Other: 45, Membership: 3, Utilities: 2 },
+    });
+    const byName = new Map([[het.name, het]]);
+    const saidIt = realizeNode(
+      {
+        id: "a",
+        op: "EXPLAIN",
+        refs: ["cat_het"],
+        text: "The test ran across group sizes of $finding:cat_het.group_ns, p = $finding:cat_het.p_value.",
+      },
+      byName,
+      new Set()
+    )!;
+    // The mapping appears ONCE — the rider recognized its binding in the
+    // authored text and stood down.
+    expect(saidIt.match(/\$finding:cat_het\.group_ns/g)).toHaveLength(1);
+    // Without the binding in the prose, the rider still fires.
+    const didNot = realizeNode(
+      {
+        id: "b",
+        op: "EXPLAIN",
+        refs: ["cat_het"],
+        text: "Amounts differ meaningfully by category, p = $finding:cat_het.p_value.",
+      },
+      byName,
+      new Set()
+    )!;
+    expect(didNot).toContain("mixes groups of very different sizes");
+    // Pure-prose riders (no bindings) always attach — the catch-all clause
+    // cannot be fingerprinted and the disclosure is the point.
+    const catchall = F("top_cat", "superlative", {
+      period: "Other",
+      value: 1138.4,
+      n: 45,
+      label_is_catchall: true,
+    });
+    const c = realizeNode(
+      {
+        id: "c",
+        op: "ANSWER",
+        refs: ["top_cat"],
+        text: "Spend concentrated in $finding:top_cat.period.",
+      },
+      new Map([[catchall.name, catchall]]),
+      new Set()
+    )!;
+    expect(c).toContain("catch-all bucket");
+  });
+
+  // Run 5872407b: the second-largest dollar category (n = 3) was silently
+  // disqualified under the bar of 5, and because the raw and attested
+  // winners coincided, the raw-beside-attested rider never fired — nothing
+  // disclosed the screening that materially framed "top category".
+  it("disqualifications disclose even when the raw and attested winners coincide", () => {
+    const sup = F("top_cat", "superlative", {
+      period: "Other",
+      value: 1138.4,
+      n: 45,
+      raw_period: "Other",
+      raw_value: 1138.4,
+      raw_n: 45,
+      thin_periods_skipped: 2,
+      thin_bar: 5,
+    });
+    const text = realizeClaim(sup);
+    // The rider names its subject claim (run 31c1cfa9): deictic phrasings
+    // misattribute when several claims' riders share a node.
+    expect(text).toContain(
+      "Some options were left out of the top cat comparison for having too little data"
+    );
+    expect(text).toContain("$finding:top_cat.thin_periods_skipped");
+    // With a DIFFERING raw extreme, the fuller raw-beside-attested rider
+    // carries the disclosure instead — never both.
+    const differing = realizeClaim(
+      F("peak", "superlative", {
+        period: "2012",
+        value: 45,
+        n: 1217,
+        raw_period: "1996",
+        raw_value: 74,
+        raw_n: 52,
+        thin_periods_skipped: 1,
+        thin_bar: 120,
+      })
+    );
+    expect(differing).toContain("For peak, the highest actual value is");
+    expect(differing).not.toContain("Some options were left out");
+    // Nothing skipped → no rider.
+    expect(
+      realizeClaim(
+        F("clean", "superlative", {
+          period: "A",
+          value: 1,
+          n: 9,
+          thin_periods_skipped: 0,
+          thin_bar: 5,
+        })
+      )
+    ).not.toContain("Some options were left out");
+  });
+
+  // Run 31c1cfa9's single audit high: the ANSWER referenced BOTH
+  // superlatives, so the merchant's bar-relaxed rider landed right after the
+  // category discussion — and "Attestation here" read as the category's
+  // confidence being undermined (its bar was 5, never relaxed). Riders name
+  // their subject so attribution survives any node placement.
+  it("riders from two claims on one node each name their subject", () => {
+    const cat = F("top_spend_category", "superlative", {
+      period: "Other",
+      value: 1138.4,
+      n: 45,
+      thin_periods_skipped: 2,
+      thin_bar: 5,
+      label_is_catchall: true,
+    });
+    const merch = F("top_merchant", "superlative", {
+      period: "AcmeMart",
+      value: 812.5,
+      n: 1,
+      thin_bar: 1,
+      bar_relaxed: true,
+    });
+    const byName = new Map([
+      [cat.name, cat],
+      [merch.name, merch],
+    ]);
+    const text = realizeNode(
+      {
+        id: "ans",
+        op: "ANSWER",
+        refs: [cat.name, merch.name],
+        text: "Spending concentrates in $finding:top_spend_category.period at $finding:top_spend_category.value; the leading merchant is $finding:top_merchant.period at $finding:top_merchant.value.",
+      },
+      byName,
+      new Set()
+    );
+    expect(text).toContain("The winner for top spend category is a catch-all bucket");
+    expect(text).toContain("Some options were left out of the top spend category comparison");
+    expect(text).toContain("This top merchant result is based on limited data");
+    // No deixis left to misattribute.
+    expect(text).not.toContain("Attestation here");
+    expect(text).not.toContain("That leader");
+  });
+
+  // Run 31c1cfa9: "with the remainder accounted for at 0%" — a zero residual
+  // is the absence of a remainder. The template states exhaustiveness.
+  it("share template states exhaustiveness instead of binding a zero residual", () => {
+    const exhaustive = realizeClaim(
+      F("spend_shares", "share", { shares_pct: { a: 60, b: 40 }, residual_pct: 0 })
+    );
+    expect(exhaustive).toContain("fully account for the total");
+    expect(exhaustive).not.toContain("residual_pct");
+    const withRemainder = realizeClaim(
+      F("spend_shares2", "share", { shares_pct: { a: 60, b: 30 }, residual_pct: 10 })
+    );
+    expect(withRemainder).toContain("$finding:spend_shares2.residual_pct");
+  });
+
+  // Run d82a39ce: the same 5-zero-day exclusion disclosed three times, once
+  // per daily claim. One underlying fact, one disclosure — keyed on the
+  // count and the claim-name root through the shared rideredClaims set.
+  it("the zero-policy rider discloses once per series root, not once per claim", () => {
+    const mk = (name: string) =>
+      F(name, "trend", {
+        direction: "flat",
+        slope_per_period: -0.016,
+        n_zero_excluded: 5,
+      });
+    const a = mk("daily_spend_trend");
+    const c = mk("daily_spend_current");
+    const byName = new Map([
+      [a.name, a],
+      [c.name, c],
+    ]);
+    const disclosed = new Set<string>();
+    const first = realizeNode({ id: "n1", op: "TREND", refs: [a.name] }, byName, disclosed);
+    const second = realizeNode({ id: "n2", op: "NOTE", refs: [c.name] }, byName, disclosed);
+    expect(first).toContain("zero values in daily spend trend were excluded");
+    expect(second).not.toContain("zero values");
+    // A DIFFERENT series root still gets its own disclosure.
+    const other = F("weekly_fees_trend", "trend", {
+      direction: "flat",
+      slope_per_period: 0.1,
+      n_zero_excluded: 5,
+    });
+    const third = realizeNode(
+      { id: "n3", op: "TREND", refs: [other.name] },
+      new Map([[other.name, other]]),
+      disclosed
+    );
+    expect(third).toContain("zero values in weekly fees trend were excluded");
+  });
+
+  // Run d82a39ce: dtype "outliers" is the model's natural name for a
+  // declared screen — it renders through the check template (flat evidence,
+  // screen semantics for failed) and is CAVEAT-eligible.
+  it("dtype outliers renders as a screen and is caveat-eligible", () => {
+    const clean = F("daily_screen", "outliers", {
+      outliers: [],
+      n_flagged: 0,
+      method: "rolling_mad",
+      window: 21,
+      k: 3.5,
+    });
+    const cleanText = realizeClaim(clean);
+    expect(cleanText).not.toContain("FAILED");
+    expect(cleanText).toContain("$finding:daily_screen.n_flagged");
+    const hit = F("txn_screen", "outliers", {
+      outliers: [{ label: "x", value: 871, z: 9 }],
+      n_flagged: 17,
+      method: "rolling_mad",
+      window: 21,
+      k: 3.5,
+    });
+    expect(realizeClaim(hit)).toContain("⚠ FAILED");
+    const v = validatePlan(
+      {
+        nodes: [
+          { id: "a", op: "ANSWER", refs: ["price_trend"] },
+          { id: "b", op: "CAVEAT", refs: ["txn_screen"] },
+        ],
+      },
+      [...FINDINGS, hit]
+    );
+    expect(v.ok).toBe(true);
+  });
+
+  // Run d82a39ce audit: pct_from_peak was unverifiable from the claim
+  // alone. When the value carries peak_value/peak_period, the template
+  // names the peak the percentage is computed against.
+  it("current_state binds its peak when the claim carries it", () => {
+    const cs = F("daily_current", "current_state", {
+      period: "2026-07-16",
+      value: 75.85,
+      pct_from_peak: -91.29,
+      peak_value: 871,
+      peak_period: "2026-07-09",
+    });
+    const text = realizeClaim(cs);
+    expect(text).toContain("$finding:daily_current.peak_value");
+    expect(text).toContain("$finding:daily_current.peak_period");
+  });
+
+  it("heterogeneity gets a dedicated template with a thin-groups rider", () => {
+    const het = F("cat_het", "heterogeneity", {
+      significant: true,
+      p_value: 0.0011,
+      test: "kruskal_wallis",
+      group_ns: { Other: 45, Groceries: 15, Membership: 3, Utilities: 2 },
+    });
+    const text = realizeClaim(het);
+    expect(text).toContain("$finding:cat_het.test");
+    expect(text).toContain("$finding:cat_het.p_value");
+    // The pooling disclosure fires — smallest group is n = 2 (< 6).
+    expect(text).toContain("mixes groups of very different sizes");
+    expect(text).toContain("$finding:cat_het.group_ns");
+    // Balanced groups: no rider.
+    const balanced = realizeClaim(
+      F("even_het", "heterogeneity", {
+        significant: true,
+        p_value: 0.03,
+        test: "anova",
+        group_ns: { a: 40, b: 38, c: 51 },
+      })
+    );
+    expect(balanced).not.toContain("pools groups");
+  });
+
+  // Spec §2.M5's building block: the deterministic floor a resolved-empty
+  // node degrades to. Findings-bound, so it cannot be empty when refs exist.
+  it("realizeNodeTemplate ignores authored text and yields non-empty prose", () => {
+    const byName = new Map(FINDINGS.map((f) => [f.name, f]));
+    const t = realizeNodeTemplate(
+      { id: "x", op: "ANSWER", refs: ["price_trend"], text: "this text is ignored" },
+      byName
+    );
+    expect(t).toBeTruthy();
+    expect(t).not.toContain("this text is ignored");
+    expect(t).toContain("$finding:price_trend");
+  });
+});
+
+describe("edit grammar — views, shown overlay, purpose survival", () => {
+  const DOC = {
+    mode: "compiled" as const,
+    purpose: "deep-dive",
+    plan: {
+      nodes: [
+        { id: "n_a", op: "ANSWER" as const, refs: ["price_trend"] },
+        { id: "n_i", op: "INSIGHT" as const, refs: [], text: "Synthesis." },
+      ],
+    },
+    overlay: {},
+  };
+  const VIEW_IDS = new Set(["chart_annual_prices__counts", "table_annual_prices", "tile_grid"]);
+
+  it("show on a catalog view force-ships it; hide retracts; purpose survives the copy", () => {
+    const shown = applyMutations(DOC, [{ kind: "show", id: "table_annual_prices" }], VIEW_IDS);
+    expect(shown.errors).toEqual([]);
+    expect(shown.doc.overlay.shown).toContain("table_annual_prices");
+    expect(shown.doc.purpose).toBe("deep-dive"); // the depth budget must not reset on edit
+    const hidden = applyMutations(
+      shown.doc,
+      [{ kind: "hide", id: "table_annual_prices" }],
+      VIEW_IDS
+    );
+    expect(hidden.doc.overlay.shown).not.toContain("table_annual_prices");
+    expect(hidden.doc.overlay.hidden).toContain("table_annual_prices");
+  });
+
+  it("geojsonKey survives the mutation round-trip (L3 backlog #3)", () => {
+    // The geometry channel is a run-level constant on the PlanDocument —
+    // applyMutations rebuilding the doc must carry it, or the first edit
+    // permanently unbinds the map from its FeatureCollection.
+    const geoDoc = { ...DOC, geojsonKey: "step_2_geojson" };
+    const out = applyMutations(geoDoc, [{ kind: "hide", id: "n_i" }], VIEW_IDS);
+    expect(out.errors).toEqual([]);
+    expect(out.doc.geojsonKey).toBe("step_2_geojson");
+    // A doc WITHOUT the key must not grow one.
+    const plain = applyMutations(DOC, [{ kind: "hide", id: "n_i" }], VIEW_IDS);
+    expect("geojsonKey" in plain.doc).toBe(false);
+  });
+
+  it("set_width pairs consecutive halves into a two-column row at compile", () => {
+    const withWidths = applyMutations(
+      DOC,
+      [
+        { kind: "set_width", id: "chart_annual_prices", width: "half" },
+        { kind: "set_width", id: "table_annual_prices", width: "half" },
+      ],
+      new Set(["chart_annual_prices", "table_annual_prices"])
+    );
+    expect(withWidths.errors).toEqual([]);
+    expect(withWidths.doc.overlay.widths).toEqual({
+      chart_annual_prices: "half",
+      table_annual_prices: "half",
+    });
+    // Back to full removes the entry (absent = full).
+    const back = applyMutations(
+      withWidths.doc,
+      [{ kind: "set_width", id: "chart_annual_prices", width: "full" }],
+      new Set(["chart_annual_prices"])
+    );
+    expect(back.doc.overlay.widths).toEqual({ table_annual_prices: "half" });
+    // Compile: halves pair into a LayoutGrid row; a lone half spans full.
+    const plan = { nodes: [{ id: "n_answer", op: "ANSWER" as const, refs: ["price_trend"] }] };
+    const lines = compileDashboard({
+      manifest: MANIFEST,
+      product: PRODUCT,
+      plan,
+      overlay: {
+        shown: ["table_annual_prices"],
+        widths: { chart_annual_prices: "half", table_annual_prices: "half" },
+      },
+      headlinePlan: [],
+      question: "q",
+    });
+    const joined = lines.join("\n");
+    expect(joined).toContain("compiled_row_chart_annual_prices");
+    const root = JSON.parse(lines[lines.length - 2]) as { value: { children: string[] } };
+    expect(root.value.children).toContain("compiled_row_chart_annual_prices");
+    expect(root.value.children).not.toContain("chart_annual_prices"); // inside the row
+    // Lone half (pair broken): renders full, no row wrapper, no hole.
+    const lone = compileDashboard({
+      manifest: MANIFEST,
+      product: PRODUCT,
+      plan,
+      overlay: { widths: { chart_annual_prices: "half" } },
+      headlinePlan: [],
+      question: "q",
+    });
+    const loneRoot = JSON.parse(lone[lone.length - 2]) as { value: { children: string[] } };
+    expect(loneRoot.value.children).toContain("chart_annual_prices");
+    expect(lone.join("\n")).not.toContain("compiled_row_");
+  });
+
+  it("puts an outliers-dtype screen that flagged offenders IN the banner (finding PE-2)", () => {
+    // An `outliers` screen fails when n_flagged>0 (no `passed` field) — same
+    // semantics realizer.ts renders the caveat with. It must reach the prominent
+    // failed-check banner, not only its own caveat node.
+    const manifest = {
+      ...MANIFEST,
+      findings: [
+        ...MANIFEST.findings,
+        F("outlier_scan", "outliers", { n_flagged: 3, method: "iqr" }),
+      ],
+    };
+    const lines = compileDashboard({
+      manifest,
+      product: PRODUCT,
+      plan: { nodes: [{ id: "n_answer", op: "ANSWER" as const, refs: ["price_trend"] }] },
+      overlay: {},
+      headlinePlan: [],
+      question: "q",
+    });
+    const bannerLine = lines.find((l) => l.includes('"/elements/compiled_check_banner"'));
+    expect(bannerLine).toBeDefined();
+    // The outliers screen is named in the banner (humanized, plain-language redesign).
+    expect(bannerLine).toContain("Outlier Scan");
+  });
+
+  it("restore_document replays a snapshot — the undo primitive, still governed", () => {
+    const removed = applyMutations(DOC, [{ kind: "remove_node", id: "n_i" }]);
+    expect(removed.doc.plan.nodes).toHaveLength(1);
+    // Undo: restore the pre-edit snapshot; even a destructive remove_node
+    // comes back, and mode/purpose ride the live document.
+    const undone = applyMutations(removed.doc, [
+      { kind: "restore_document", plan: DOC.plan, overlay: DOC.overlay },
+    ]);
+    expect(undone.errors).toEqual([]);
+    expect(undone.doc.plan.nodes).toHaveLength(2);
+    expect(undone.doc.plan.nodes.map((n) => n.id)).toContain("n_i");
+    expect(undone.doc.purpose).toBe("deep-dive");
+  });
+
+  it("the FIRST move on a fresh dashboard anchors to non-node elements via baseOrder", () => {
+    // The shipped "drag and drop doesn't work": with overlay.order empty
+    // (every new run), move's fallback base was plan nodes only, so a drag
+    // anchored to tiles/charts — most of the page — failed "unknown
+    // anchor" while the API returned 200.
+    const baseOrder = ["tile_grid", "n_a", "n_i", "table_annual_prices"];
+    const moved = applyMutations(
+      DOC,
+      [{ kind: "move", id: "table_annual_prices", before: "tile_grid" }],
+      VIEW_IDS,
+      baseOrder
+    );
+    expect(moved.errors).toEqual([]);
+    expect(moved.doc.overlay.order).toEqual(["table_annual_prices", "tile_grid", "n_a", "n_i"]);
+    // Without baseOrder the same move errors — and the caller must FAIL
+    // the edit rather than 200 a silent no-op (editDashboard does).
+    const broken = applyMutations(
+      DOC,
+      [{ kind: "move", id: "table_annual_prices", before: "tile_grid" }],
+      VIEW_IDS
+    );
+    expect(broken.errors).toHaveLength(1);
+  });
+
+  it("view ids are movable with knownElementIds; typos still error", () => {
+    const ok = applyMutations(
+      DOC,
+      [{ kind: "move", id: "chart_annual_prices__counts", before: "n_a" }],
+      VIEW_IDS
+    );
+    expect(ok.errors).toEqual([]);
+    expect(ok.doc.overlay.order?.[0]).toBe("chart_annual_prices__counts");
+    const typo = applyMutations(DOC, [{ kind: "hide", id: "chart_nope" }], VIEW_IDS);
+    expect(typo.errors).toHaveLength(1);
+  });
+
+  it("compile ships a shown catalog view that would not ship by default", () => {
+    const plan = {
+      nodes: [{ id: "n_answer", op: "ANSWER" as const, refs: ["price_trend"] }],
+    };
+    const base = {
+      manifest: MANIFEST,
+      product: PRODUCT,
+      plan,
+      overlay: {},
+      headlinePlan: [],
+      question: "q",
+    };
+    expect(compileDashboard(base).join("\n")).not.toContain("table_annual_prices");
+    const withShown = compileDashboard({
+      ...base,
+      overlay: { shown: ["table_annual_prices"] },
+    }).join("\n");
+    expect(withShown).toContain("table_annual_prices");
+  });
+});
+
+describe("edit surface — one read for the editing UI (web panel + MCP)", () => {
+  it("exposes sections in render order, uncited claims, and the view catalog", async () => {
+    cacheArtifacts("csv-edit-surface-1", {
+      code: "",
+      question: "How have prices changed?",
+      results: {},
+      chart_data: {},
+      datasets: {},
+      execution_ms: 0,
+      findings: MANIFEST,
+      series: PRODUCT.series,
+      plan: {
+        mode: "compiled",
+        purpose: "report",
+        plan: { nodes: [{ id: "n_a", op: "ANSWER", refs: ["price_trend"] }] },
+        overlay: {},
+      },
+    });
+    const s = await getEditSurface("csv-edit-surface-1");
+    expect(s).not.toBeNull();
+    const ids = s!.sections.map((x) => x.id);
+    expect(ids).toContain("compiled_check_banner"); // zero_screen failed
+    expect(ids).toContain("n_a");
+    expect(ids).toContain("chart_annual_prices");
+    expect(ids).toContain("table_annual_prices"); // report purpose ships the table
+    // Un-narrated claims are offered with a suggested op; checks are not
+    // (caveats stay grammar-governed).
+    const uncited = s!.claims.filter((c) => !c.cited).map((c) => c.name);
+    expect(uncited).toContain("price_peak");
+    expect(s!.claims.map((c) => c.name)).not.toContain("zero_screen");
+    expect(s!.claims.find((c) => c.name === "price_peak")?.suggestedOp).toBe("PEAK");
+    // The unshipped coverage companion is the add-chart affordance, with
+    // its reason attached.
+    const cov = s!.views.find((v) => v.kind === "coverage");
+    expect(cov?.shipped).toBe(false);
+    expect(cov?.reason.length).toBeGreaterThan(10);
+    // Previews are RESOLVED sentences — real numbers, never binding syntax
+    // (the panel mirrors what the reader sees, not the IR).
+    const answer = s!.sections.find((x) => x.id === "n_a");
+    expect(answer?.preview).not.toContain("$finding:");
+    expect(answer?.preview).toContain("rising"); // price_trend.direction resolved
+    const peakClaim = s!.claims.find((c) => c.name === "price_peak");
+    expect(peakClaim?.preview).not.toContain("$finding:");
+    expect(peakClaim?.preview).toContain("1998"); // its period, resolved
+  });
+
+  it("preview formatting: tiny p-values keep their exponent; identifiers read as prose", () => {
+    // Live E2E caught "(p = 0)" for p=1.08e-12 — the p-value sin in
+    // preview form — and "rate_effect" leaking into a sentence.
+    const fs = [F("t", "direction", { p: 1.9e-12, dom: "rate_effect" })];
+    expect(resolvePreviewText("p = $finding:t.p", fs)).toBe("p = 1.90e-12");
+    expect(resolvePreviewText("driven by $finding:t.dom", fs)).toBe("driven by rate effect");
+    // Unresolvable tokens stay intact — never guessed.
+    expect(resolvePreviewText("$finding:ghost.x", fs)).toBe("$finding:ghost.x");
+  });
+});
+
+describe("planner salvage — one bad node degrades one node, never the document", () => {
+  const authored = (text: string) => text;
+  const basePlan = {
+    nodes: [
+      {
+        id: "s1",
+        op: "ANSWER" as const,
+        refs: ["price_trend"],
+        text: authored("Prices are $finding:price_trend.direction across the window."),
+      },
+      {
+        id: "s2",
+        op: "PEAK" as const,
+        refs: ["price_peak"],
+        text: authored("The peak arrived in 1998 with force."), // literal year → invalid
+      },
+      { id: "s3", op: "CAVEAT" as const, refs: ["zero_screen"], text: "coverage collapsed" },
+      { id: "s4", op: "NOTE" as const, refs: ["ghost_claim"] },
+      {
+        id: "s5",
+        op: "METHOD" as const,
+        refs: ["price_trend"],
+        text: authored("Slopes were fit per period and screened."),
+      },
+      { id: "s6", op: "SECTION" as const, refs: [] }, // text-required, none → dropped
+    ],
+  };
+
+  it("strips invalid text, keeps the node; drops only irreparable nodes", () => {
+    const vp = validatePlan;
+    const { plan, repairs } = salvage(basePlan, FINDINGS);
+    const byId = new Map(plan.nodes.map((n) => [n.id, n]));
+    // Valid authored text survives untouched.
+    expect(byId.get("s1")?.text).toContain("$finding:price_trend.direction");
+    // Literal-digit text is stripped — the node falls back to its template.
+    expect(byId.get("s2")).toBeDefined();
+    expect(byId.get("s2")?.text).toBeUndefined();
+    // CAVEAT free text stripped, caveat kept.
+    expect(byId.get("s3")).toBeDefined();
+    expect(byId.get("s3")?.text).toBeUndefined();
+    // Unknown-ref node and textless SECTION dropped.
+    expect(byId.has("s4")).toBe(false);
+    expect(byId.has("s6")).toBe(false);
+    // METHOD with valid text survives.
+    expect(byId.get("s5")?.text).toContain("Slopes were fit");
+    // The salvaged plan validates — the document ships authored.
+    expect(vp(plan, FINDINGS).ok).toBe(true);
+    expect(repairs.length).toBeGreaterThan(0);
+  });
+
+  it("injects a template ANSWER when none survives; demotes extras", () => {
+    const noAnswer = salvage(
+      { nodes: [{ id: "n1", op: "TREND" as const, refs: ["price_trend"] }] },
+      FINDINGS
+    );
+    expect(noAnswer.plan.nodes.some((n) => n.op === "ANSWER")).toBe(true);
+    expect(validatePlan(noAnswer.plan, FINDINGS).ok).toBe(true);
+    const twoAnswers = salvage(
+      {
+        nodes: [
+          { id: "a1", op: "ANSWER" as const, refs: ["price_trend"] },
+          { id: "a2", op: "ANSWER" as const, refs: ["price_peak"] },
+        ],
+      },
+      FINDINGS
+    );
+    expect(twoAnswers.plan.nodes.filter((n) => n.op === "ANSWER").length).toBe(1);
+    expect(twoAnswers.plan.nodes.find((n) => n.id === "a2")?.op).toBe("NOTE");
+  });
+});
+
+describe("group-series views — the matrix is the honest primary", () => {
+  const GROUPED: AnalysisProduct = {
+    series: [
+      {
+        id: "segment_churn",
+        rows: [
+          { month: "2024-01", segment: "A", rate: 1.5 },
+          { month: "2024-01", segment: "B", rate: 2.5 },
+          { month: "2024-02", segment: "A", rate: 1.7 },
+          { month: "2024-02", segment: "B", rate: 2.9 },
+        ],
+        roles: {
+          x: { column: "month", kind: "temporal" },
+          group: { column: "segment" },
+          measures: [{ column: "rate", unit: "pct" }],
+        },
+      },
+    ],
+    values: [],
+  };
+
+  it("pivots a complete group series into a HeatMap primary", () => {
+    const views = deriveViews({ series: GROUPED.series });
+    const matrix = views.find((v) => v.kind === "group_matrix");
+    expect(matrix?.id).toBe("chart_segment_churn");
+    expect(matrix?.shipped).toBe(true);
+    const props = (matrix?.patch.value as { props: Record<string, unknown> }).props;
+    expect(props.z).toEqual([
+      [1.5, 1.7],
+      [2.5, 2.9],
+    ]);
+    expect(props.x_labels).toEqual(["2024-01", "2024-02"]);
+    expect(props.y_labels).toEqual(["A", "B"]);
+    // The flat single-line chart is NOT derived for this series — a grouped
+    // long series through a flat line is the sawtooth defect.
+    expect(views.some((v) => v.seriesId === "segment_churn" && v.kind === "primary")).toBe(false);
+  });
+
+  it("an incomplete pivot falls through to the flat family, never invents holes", () => {
+    const holey = {
+      ...GROUPED.series[0],
+      rows: GROUPED.series[0].rows.slice(0, 3), // B missing in 2024-02
+    };
+    const views = deriveViews({ series: [holey] });
+    expect(views.some((v) => v.kind === "group_matrix")).toBe(false);
+    expect(views.some((v) => v.kind === "primary")).toBe(true);
+  });
+
+  it("two or more charts default to half width and pair into rows; overlay wins", () => {
+    const second = { ...PRODUCT.series[0], id: "monthly_prices" };
+    const twoCharts: AnalysisProduct = {
+      series: [PRODUCT.series[0], second],
+      values: [],
+    };
+    const views = deriveViews({ series: twoCharts.series }).filter((v) => v.shipped);
+    const defaults = viewDefaultWidths(views);
+    expect(defaults["chart_annual_prices"]).toBe("half");
+    expect(defaults["chart_monthly_prices"]).toBe("half");
+    // A single shipped chart stays full — nothing to pair with.
+    expect(viewDefaultWidths(views.filter((v) => v.id === "chart_annual_prices"))).toEqual({});
+    // Compile pairs the two default-half charts into one two-column row.
+    const lines = compileDashboard({
+      manifest: MANIFEST,
+      product: twoCharts,
+      plan: { nodes: [{ id: "a", op: "ANSWER", refs: ["price_trend"] }] },
+      overlay: {},
+      headlinePlan: [],
+      question: "q",
+    });
+    const rows = lines.filter((l) => l.includes("compiled_row_"));
+    expect(rows.length).toBeGreaterThan(0);
+    expect(rows[0]).toContain("chart_annual_prices");
+    // Overlay full-width overrides the catalog default.
+    const overridden = compileDashboard({
+      manifest: MANIFEST,
+      product: twoCharts,
+      plan: { nodes: [{ id: "a", op: "ANSWER", refs: ["price_trend"] }] },
+      overlay: { widths: { chart_annual_prices: "full", chart_monthly_prices: "full" } },
+      headlinePlan: [],
+      question: "q",
+    });
+    expect(overridden.filter((l) => l.includes("compiled_row_")).length).toBe(0);
+  });
+
+  it("catalog charts carry a deterministic color map (not default red)", () => {
+    const views = deriveViews({ series: [PRODUCT.series[0]] });
+    const primary = views.find((v) => v.kind === "primary");
+    const props = (primary?.patch.value as { props: Record<string, unknown> }).props;
+    expect(props.color_map).toMatchObject({ median: "indigo" });
+  });
+});
+
+describe("derived interactivity — filters from declared roles (spec §14.3)", () => {
+  const GROUPED_SERIES = {
+    id: "segment_churn",
+    rows: [
+      { month_str: "2024-01", segment: "A", rate: 1.5 },
+      { month_str: "2024-01", segment: "B", rate: 2.5 },
+      { month_str: "2024-02", segment: "A", rate: 1.7 },
+      { month_str: "2024-02", segment: "B", rate: 2.9 },
+    ],
+    roles: {
+      x: { column: "month_str", kind: "temporal" as const },
+      group: { column: "segment" },
+      measures: [{ column: "rate", unit: "pct" }],
+    },
+  };
+
+  it("a declared group role earns a filter bar; an undeclared one does not", () => {
+    const views = deriveViews({ series: [GROUPED_SERIES] }).filter((v) => v.shipped);
+    const c = deriveController(GROUPED_SERIES, views);
+    expect(c?.id).toBe("controls_segment_churn");
+    const props = (c!.element.value as { props: Record<string, unknown> }).props;
+    const filters = props.filters as { label: string; column: string; bindTo: string }[];
+    // Group first, then the x dimension — and labels are prose, not keys:
+    // "month_str" is a storage detail.
+    expect(filters.map((f) => f.label)).toEqual(["Segment", "Month"]);
+    expect(filters[0].bindTo).toBe("/filters/segment_churn__segment");
+    // Scope is stated so the reader knows what responds.
+    expect(String(props.scope_note)).toContain("Other charts");
+    // A series with no group role gets no controller — nothing to filter by.
+    expect(deriveController(PRODUCT.series[0], [])).toBeNull();
+  });
+
+  it("x and group being the SAME column yields ONE filter, not a duplicate", () => {
+    // A "size by chain" bar is both indexed (x_key) and grouped (group role) by
+    // `chain` — the group filter already covers it, so the x-dimension filter
+    // must not be added a second time (run 7fae5c9f: "Chain / All" shown twice).
+    const SAME_DIM = {
+      id: "chain_size",
+      rows: [
+        { chain: "Shell", size: 120 },
+        { chain: "Valero", size: 80 },
+        { chain: "Subway", size: 75 },
+      ],
+      roles: {
+        x: { column: "chain", kind: "categorical" as const },
+        group: { column: "chain" },
+        measures: [{ column: "size", unit: "sqm" }],
+      },
+    };
+    const views = deriveViews({ series: [SAME_DIM] }).filter((v) => v.shipped);
+    const c = deriveController(SAME_DIM, views)!;
+    const filters = (c.element.value as { props: { filters: { label: string }[] } }).props.filters;
+    expect(filters).toHaveLength(1);
+    expect(filters[0].label).toBe("Chain");
+  });
+
+  it("outputs pivot to the matrix orientation the HeatMap reads, pre-populated", () => {
+    const views = deriveViews({ series: [GROUPED_SERIES] }).filter((v) => v.shipped);
+    const c = deriveController(GROUPED_SERIES, views)!;
+    const props = (c.element.value as { props: Record<string, unknown> }).props;
+    const outputs = props.outputs as { statePath: string; format: string; pipeline: unknown[] }[];
+    expect(outputs[0].statePath).toBe("/computed/chart_segment_churn");
+    expect(outputs[0].format).toBe("matrix");
+    expect(outputs[0].pipeline[0]).toMatchObject({
+      op: "pivot",
+      rowKey: "segment", // rowKey → y_labels (the HeatMap contract)
+      columnKey: "month_str",
+      valueKey: "rate",
+    });
+    // First paint equals the static dashboard: initial state carries the
+    // exact pivot the catalog computed, so interactivity is additive.
+    const pre = c.state.computed["chart_segment_churn"] as { y_labels: string[]; z: number[][] };
+    expect(pre.y_labels).toEqual(["A", "B"]);
+    expect(pre.z).toEqual([
+      [1.5, 1.7],
+      [2.5, 2.9],
+    ]);
+    expect(c.state.filters).toEqual({
+      segment_churn__segment: "All",
+      segment_churn__month_str: "All",
+    });
+  });
+
+  it("compile emits state first, controls above their chart, and rebinds it", () => {
+    const lines = compileDashboard({
+      manifest: MANIFEST,
+      product: { series: [GROUPED_SERIES], values: [] },
+      plan: { nodes: [{ id: "a", op: "ANSWER", refs: ["price_trend"] }] },
+      overlay: {},
+      headlinePlan: [],
+      question: "q",
+    });
+    // State leads: the finalizer harvests declared keys as patches stream and
+    // repairs bindings against them — a binding before its key is repaired away.
+    const first = JSON.parse(lines[0]) as { path: string; value: Record<string, unknown> };
+    expect(first.path).toBe("/state");
+    expect(Object.keys(first.value.datasets as object)).toContain("segment_churn");
+    const root = JSON.parse(lines[lines.length - 2]) as { value: { children: string[] } };
+    expect(root.value.children.indexOf("controls_segment_churn")).toBe(
+      root.value.children.indexOf("chart_segment_churn") - 1
+    );
+    // The chart now reads controller state instead of inline data.
+    const chart = lines
+      .map((l) => JSON.parse(l) as { path: string; value?: { props?: Record<string, unknown> } })
+      .find((p) => p.path === "/elements/chart_segment_churn");
+    expect(chart?.value?.props?.z).toEqual({ $state: "/computed/chart_segment_churn/z" });
+    // Hiding the controls is an ordinary overlay edit — and then the chart
+    // keeps its own data rather than binding to state nothing produces.
+    const noControls = compileDashboard({
+      manifest: MANIFEST,
+      product: { series: [GROUPED_SERIES], values: [] },
+      plan: { nodes: [{ id: "a", op: "ANSWER", refs: ["price_trend"] }] },
+      overlay: { hidden: ["controls_segment_churn"] },
+      headlinePlan: [],
+      question: "q",
+    });
+    expect(noControls.join()).not.toContain("controls_segment_churn");
+    const staticChart = noControls
+      .map((l) => JSON.parse(l) as { path: string; value?: { props?: Record<string, unknown> } })
+      .find((p) => p.path === "/elements/chart_segment_churn");
+    expect(Array.isArray(staticChart?.value?.props?.z)).toBe(true);
+  });
+
+  it("chart legends read as prose: label_map humanizes every measure", () => {
+    const views = deriveViews({ series: [PRODUCT.series[0]] });
+    const primary = views.find((v) => v.kind === "primary");
+    const props = (primary!.patch.value as { props: Record<string, unknown> }).props;
+    expect(props.label_map).toMatchObject({
+      median: "Median",
+      // The raw sibling says what it is in words, not a "_raw" suffix.
+      median_raw: "Median (unscreened)",
+      n: "Observations",
+    });
+  });
+});
+
+describe("declared re-aggregation — filter what the series doesn't carry (spec §14.4)", () => {
+  // The real shape from the churn run: a rate series aggregated FROM a raw
+  // segment-month table. The aggregated rows carry no segment column, so
+  // filtering by segment is only possible by rebuilding from the source.
+  const RAW = [
+    { month: "2024-01", segment: "A", active: 400, churned: 8 },
+    { month: "2024-01", segment: "B", active: 100, churned: 14 },
+    { month: "2024-02", segment: "A", active: 400, churned: 12 },
+    { month: "2024-02", segment: "B", active: 100, churned: 18 },
+  ];
+  // Pooled: Jan = 22/500 = 4.4%, Feb = 30/500 = 6%. The average of the
+  // per-segment rates would be 7.75% and 10.5% — a different story entirely.
+  const RATE_SERIES = {
+    id: "monthly_rate",
+    rows: [
+      { month: "2024-01", rate_pct: 4.4 },
+      { month: "2024-02", rate_pct: 6 },
+    ],
+    roles: {
+      x: { column: "month", kind: "temporal" as const },
+      measures: [
+        {
+          column: "rate_pct",
+          unit: "pct",
+          aggregates: {
+            fn: "ratio" as const,
+            numerator: "churned",
+            denominator: "active",
+            from: "main",
+          },
+        },
+      ],
+    },
+  };
+  const GROUPED = {
+    id: "segment_rate",
+    rows: RAW.map((r) => ({ month: r.month, segment: r.segment, rate: 1 })),
+    roles: {
+      x: { column: "month", kind: "temporal" as const },
+      group: { column: "segment" },
+      measures: [{ column: "rate", unit: "pct" }],
+    },
+  };
+  const views = () => deriveViews({ series: [RATE_SERIES] }).filter((v) => v.shipped);
+
+  it("a verified recipe earns filters on a dimension the series never carried", () => {
+    const c = deriveAggregatingController(RATE_SERIES, views(), { main: RAW }, [
+      RATE_SERIES,
+      GROUPED,
+    ]);
+    expect(c).not.toBeNull();
+    const props = (c!.element.value as { props: Record<string, unknown> }).props;
+    // The filter vocabulary is roles-first: "segment" is a dimension ANOTHER
+    // series declared as its group, and the raw table carries it.
+    expect((props.filters as { label: string }[]).map((f) => f.label)).toEqual(["Segment"]);
+    expect(props.source).toEqual({ statePath: "/datasets/main" });
+    // A ratio is rebuilt from its PARTS, never averaged.
+    const pipeline = (props.outputs as { pipeline: Record<string, unknown>[] }[])[0].pipeline;
+    expect(pipeline[0]).toMatchObject({
+      op: "groupBy",
+      columns: ["month"],
+      aggregations: [
+        { column: "churned", fn: "sum", as: "rate_pct__num" },
+        { column: "active", fn: "sum", as: "rate_pct__den" },
+      ],
+    });
+    expect(pipeline[1]).toMatchObject({
+      op: "compute",
+      column: "rate_pct",
+      expression: "percent(rate_pct__num, rate_pct__den)",
+    });
+  });
+
+  it("REFUSES a recipe that does not reproduce the declared rows", () => {
+    // The tempting wrong recipe: average the per-row rates. On this data it
+    // yields 7.75% where the analysis computed 4.4% — the base-rate error
+    // that makes inferred re-aggregation unsafe.
+    const rawWithRates = RAW.map((r) => ({ ...r, row_rate: (100 * r.churned) / r.active }));
+    const wrong = {
+      ...RATE_SERIES,
+      roles: {
+        ...RATE_SERIES.roles,
+        measures: [
+          {
+            column: "rate_pct",
+            unit: "pct",
+            aggregates: { fn: "avg" as const, column: "row_rate", from: "main" },
+          },
+        ],
+      },
+    };
+    const mismatch = verifyBaseline(
+      wrong,
+      rawWithRates,
+      [
+        {
+          op: "groupBy",
+          columns: ["month"],
+          aggregations: [{ column: "row_rate", fn: "avg", as: "rate_pct" }],
+        },
+      ],
+      ["rate_pct"]
+    );
+    expect(mismatch).toContain("the analysis declared 4.4");
+    expect(
+      deriveAggregatingController(wrong, views(), { main: rawWithRates }, [wrong, GROUPED])
+    ).toBeNull();
+  });
+
+  it("declines when the recipe cannot rebuild every charted column", () => {
+    // A screened measure charted beside its raw sibling: rebuilding only one
+    // would draw a filtered line beside an unfiltered one, two populations
+    // on one axis. Static is the honest outcome.
+    const partial = {
+      ...RATE_SERIES,
+      rows: RATE_SERIES.rows.map((r) => ({ ...r, rate_pct_raw: r.rate_pct })),
+      roles: {
+        ...RATE_SERIES.roles,
+        measures: [
+          { ...RATE_SERIES.roles.measures[0], variant_of: "rate_pct_raw" },
+          { column: "rate_pct_raw", unit: "pct" }, // no recipe
+        ],
+      },
+    };
+    const partialViews = deriveViews({ series: [partial] }).filter((v) => v.shipped);
+    expect(
+      deriveAggregatingController(partial, partialViews, { main: RAW }, [partial, GROUPED])
+    ).toBeNull();
+  });
+
+  it("declines without a source table, a recipe, or a dimension to filter by", () => {
+    expect(deriveAggregatingController(RATE_SERIES, views(), undefined, [RATE_SERIES])).toBeNull();
+    expect(
+      deriveAggregatingController(RATE_SERIES, views(), { main: RAW }, [RATE_SERIES])
+    ).toBeNull(); // no group role anywhere
+    const noRecipe = {
+      ...RATE_SERIES,
+      roles: { ...RATE_SERIES.roles, measures: [{ column: "rate_pct", unit: "pct" }] },
+    };
+    expect(
+      deriveAggregatingController(noRecipe, views(), { main: RAW }, [noRecipe, GROUPED])
+    ).toBeNull();
+  });
+
+  it("compile prefers the verified recipe and wires the chart to recomputed state", () => {
+    const lines = compileDashboard({
+      manifest: MANIFEST,
+      product: { series: [RATE_SERIES, GROUPED], values: [] },
+      plan: { nodes: [{ id: "a", op: "ANSWER", refs: ["price_trend"] }] },
+      overlay: {},
+      headlinePlan: [],
+      question: "q",
+      datasets: { main: RAW },
+    });
+    const byPath = new Map(
+      lines.map((l) => {
+        const p = JSON.parse(l) as { path: string; value?: Record<string, unknown> };
+        return [p.path, p];
+      })
+    );
+    expect(byPath.has("/elements/controls_monthly_rate")).toBe(true);
+    const chart = byPath.get("/elements/chart_monthly_rate")?.value as {
+      props: Record<string, unknown>;
+    };
+    expect(chart.props.data).toEqual({ $state: "/computed/chart_monthly_rate" });
+    // The raw source ships in state so the client can re-aggregate it.
+    const state = byPath.get("/state")?.value as { datasets: Record<string, unknown> };
+    expect(state.datasets.main).toHaveLength(4);
+  });
+});
+
+describe("view catalog — deterministic derivation from roles + regimes", () => {
+  const SERIES = PRODUCT.series[0]; // annual_prices: median(usd)/median_raw + count n
+
+  it("primary keeps its stable id; coverage and table exist unshipped by default", () => {
+    const views = deriveViews({ series: [SERIES] });
+    const byId = new Map(views.map((v) => [v.id, v]));
+    expect(byId.get("chart_annual_prices")?.shipped).toBe(true);
+    expect(byId.get("chart_annual_prices__counts")?.shipped).toBe(false);
+    expect(byId.get("table_annual_prices")?.shipped).toBe(false);
+  });
+
+  it("thin-data regimes force the coverage companion for every purpose", () => {
+    const views = deriveViews({
+      series: [SERIES],
+      regimes: { annual_prices: { flags: ["COUNT_SKEWED", "THIN_EDGE"] } },
+      purpose: "brief",
+    });
+    const cov = views.find((v) => v.kind === "coverage");
+    expect(cov?.shipped).toBe(true);
+    expect(cov?.reason).toContain("COUNT_SKEWED");
+    const patch = cov!.patch.value as { type: string; props: { y_keys: string[] } };
+    expect(patch.type).toBe("BarChart");
+    expect(patch.props.y_keys).toEqual(["n"]);
+  });
+
+  it("deep-dive ships coverage + table; report ships the table", () => {
+    const deep = deriveViews({ series: [SERIES], purpose: "deep-dive" });
+    expect(deep.find((v) => v.kind === "coverage")?.shipped).toBe(true);
+    expect(deep.find((v) => v.kind === "table")?.shipped).toBe(true);
+    const report = deriveViews({ series: [SERIES], purpose: "report" });
+    expect(report.find((v) => v.kind === "table")?.shipped).toBe(true);
+    expect(report.find((v) => v.kind === "coverage")?.shipped).toBe(false);
+  });
+
+  it("mixed units split into separate charts — never one y axis", () => {
+    const mixed = {
+      ...SERIES,
+      roles: {
+        ...SERIES.roles,
+        measures: [
+          { column: "median", unit: "usd" },
+          { column: "n_items", unit: "count" },
+        ],
+      },
+    };
+    const views = deriveViews({ series: [mixed] });
+    const primary = views.find((v) => v.kind === "primary")!;
+    const split = views.find((v) => v.kind === "unit_split")!;
+    expect((primary.patch.value as { props: { y_keys: string[] } }).props.y_keys).toEqual([
+      "median",
+    ]);
+    expect(split.shipped).toBe(true);
+    expect((split.patch.value as { props: { y_keys: string[] } }).props.y_keys).toEqual([
+      "n_items",
+    ]);
+  });
+});
+
+describe("geo series — the derived floor renders a MAP, never bars (map-pin fix)", () => {
+  const geoSeries = (n: number) => ({
+    id: "chain_locations",
+    rows: Array.from({ length: n }, (_, i) => ({
+      name: `p${i}`,
+      lat: 47.6 + i * 0.001,
+      lng: -122.3 - i * 0.001,
+      location_count: i + 1,
+    })),
+    roles: {
+      x: { column: "name", kind: "categorical" as const },
+      measures: [{ column: "location_count", unit: "count" }],
+    },
+  });
+
+  it("few nameable places → a MapView primary and NO axis unit-split/coverage bar", () => {
+    const views = deriveViews({ series: [geoSeries(4)] }).filter((v) => v.shipped);
+    const primary = views.find((v) => v.kind === "primary")!;
+    expect((primary.patch.value as { type: string }).type).toBe("MapView");
+    // The stray "…(score)" BarChart companion (run 6e0392a5) is gone: a geo
+    // series emits no axis views at all — its measures ride on the map.
+    expect(views.some((v) => v.kind === "unit_split" || v.kind === "coverage")).toBe(false);
+    const types = views.map((v) => (v.patch.value as { type: string }).type);
+    expect(types).not.toContain("BarChart");
+    expect(types).not.toContain("LineChart");
+  });
+
+  it("many points → a Map3D DENSITY heatmap weighted by the measure, not pins", () => {
+    const views = deriveViews({ series: [geoSeries(40)] }).filter((v) => v.shipped);
+    const primary = views.find((v) => v.kind === "primary")!;
+    const val = primary.patch.value as { type: string; props: Record<string, unknown> };
+    expect(val.type).toBe("Map3D");
+    expect(val.props.layer_type).toBe("heatmap");
+    expect(val.props.value_key).toBe("location_count");
+  });
+
+  it("the precision table still ships for document styles", () => {
+    const report = deriveViews({ series: [geoSeries(40)], purpose: "report" });
+    const table = report.find((v) => v.kind === "table")!;
+    expect(table.shipped).toBe(true);
+    expect((table.patch.value as { type: string }).type).toBe("DataTable");
+  });
+
+  it("geoViewElement: Map3D is a heatmap; MapView keeps clickable markers", () => {
+    const s = geoSeries(3) as unknown as Parameters<typeof geoViewElement>[1];
+    const m3d = geoViewElement("Map3D", s, "Density")!;
+    expect(m3d.props.layer_type).toBe("heatmap");
+    const mv = geoViewElement("MapView", s, "Places")!;
+    expect(mv.type).toBe("MapView");
+    expect(Array.isArray(mv.props.markers)).toBe(true);
+  });
+});
+
+describe("realizer — honesty clauses live IN the templates", () => {
+  it("every claim dtype in the taxonomy has a dedicated template (exhaustiveness)", () => {
+    // A taxonomy dtype falling through to the generic template would render
+    // "<label> — <definition>: $finding:<name>." — assert none do.
+    const samples: Array<[string, unknown]> = [
+      ["direction", { direction: "rising", slope_per_period: 1, p_value: 0.01 }],
+      ["superlative", { period: "x", value: 1, n: 5 }],
+      ["current_state", { period: "x", value: 1, pct_from_peak: -5 }],
+      [
+        "comparison",
+        { early_median: 1, late_median: 2, multiplier: 2, early_span: "a", late_span: "b" },
+      ],
+      ["step_change", { period: "x", delta: 1, direction: "up", baseline_spread: 0.1 }],
+      ["distribution", { median: 1, mean: 2, skew: 3 }],
+      [
+        "correlation",
+        { pearson_r: 0.5, pearson_p: 0.01, spearman_rho: 0.4, spearman_p: 0.02, n: 10 },
+      ],
+      ["share", { shares_pct: {}, residual_pct: 1 }],
+      ["check", { passed: true, evidence: {} }],
+      ["screen", { passed: false, evidence: { n_flagged: 2 } }],
+    ];
+    for (const [dtype, value] of samples) {
+      const text = realizeClaim(F(`claim_${dtype}`, dtype, value));
+      expect(text, dtype).not.toContain("over the observed period:");
+    }
+  });
+
+  it("superlative renders the raw extreme beside the attested value", () => {
+    const text = realizeClaim(FINDINGS[1]);
+    expect(text).toContain("$finding:price_peak.value");
+    expect(text).toContain("$finding:price_peak.raw_value");
+    expect(text).toContain("$finding:price_peak.thin_bar");
+  });
+
+  it("current_state binds excluded_reason and latest_* — mechanisms cannot be invented", () => {
+    const text = realizeClaim(FINDINGS[2]);
+    expect(text).toContain("$finding:price_current_state.excluded_reason");
+    expect(text).toContain("$finding:price_current_state.latest_value");
+  });
+
+  it("trend renders the CI beside the slope", () => {
+    const text = realizeClaim(FINDINGS[0]);
+    expect(text).toContain("slope_ci95.0");
+    expect(text).toContain("$finding:price_trend.p_value");
+  });
+
+  it("renders n_zero_excluded when the claim-layer zero screen fired, silent otherwise", () => {
+    // Claim-layer totalization (regime-matrix amendment): a policy the
+    // helper applied must be visible in the sentence it produced.
+    const screened = realizeClaim(
+      F("price_trend_z", "trend", {
+        direction: "rising",
+        slope_per_period: 1,
+        p_value: 0.01,
+        n_zero_excluded: 12,
+      })
+    );
+    expect(screened).toContain("$finding:price_trend_z.n_zero_excluded");
+    expect(screened).toContain("unrecorded-value sentinels");
+    // n_zero_excluded 0 (or absent — pre-totalization payloads) adds nothing.
+    const clean = realizeClaim(
+      F("price_trend_c", "trend", {
+        direction: "rising",
+        slope_per_period: 1,
+        p_value: 0.01,
+        n_zero_excluded: 0,
+      })
+    );
+    expect(clean).not.toContain("n_zero_excluded");
+    expect(realizeClaim(FINDINGS[0])).not.toContain("n_zero_excluded");
+    // The clause spans the unit=-threaded templates, not just trend.
+    const sup = realizeClaim(
+      F("peak_z", "superlative", { period: "x", value: 1, n: 5, n_zero_excluded: 3 })
+    );
+    expect(sup).toContain("$finding:peak_z.n_zero_excluded");
+    const dist = realizeClaim(
+      F("dist_z", "distribution", { median: 1, mean: 2, skew: 3, n_zero_excluded: 2 })
+    );
+    expect(dist).toContain("$finding:dist_z.n_zero_excluded");
+  });
+
+  it("renders the weighted-fit and preferred-coefficient dispatches when present", () => {
+    const wls = realizeClaim(
+      F("price_trend_w", "trend", {
+        direction: "flat",
+        slope_per_period: 0.03,
+        p_value: 0.92,
+        weighted: true,
+      })
+    );
+    expect(wls).toContain("(count-weighted fit)");
+    expect(realizeClaim(FINDINGS[0])).not.toContain("count-weighted");
+    const corr = realizeClaim(
+      F("price_vs_n", "correlation", {
+        pearson_r: 0.5,
+        pearson_p: 0.01,
+        spearman_rho: 0.7,
+        spearman_p: 0.001,
+        n: 40,
+        preferred: "spearman",
+      })
+    );
+    expect(corr).toContain("$finding:price_vs_n.preferred");
+  });
+
+  it("templates are shape-guarded: a dtype whose value doesn't fit falls back to generic", () => {
+    // First compiled run shipped "Segment heterogeneity: at per period,
+    // p = 2.33e-8" — dtype "direction" with a per-segment dict value bound
+    // trend fields that don't exist. The guard sends it to the generic
+    // definition rendering instead.
+    const het = realizeClaim(
+      F("segment_heterogeneity", "direction", { segments: { smb: 4.8, enterprise: 2.3 } })
+    );
+    expect(het).not.toContain("per period");
+    expect(het).toContain("over the observed period"); // the definition
+    expect(het).toContain("$finding:segment_heterogeneity");
+    // A well-shaped trend still gets its dedicated template.
+    expect(realizeClaim(FINDINGS[0])).toContain("per period");
+  });
+
+  it("step and split sentences are grammatical (no 'a up step', no doubled span)", () => {
+    const step = realizeClaim(
+      F("churn_step", "step_change", {
+        period: "2024-08",
+        delta: 4.4,
+        direction: "up",
+        baseline_spread: 0.46,
+      })
+    );
+    expect(step).toContain("the level steps $finding:churn_step.direction by");
+    expect(step).not.toContain("a $finding:churn_step.direction step");
+    const split = realizeClaim(
+      F("churn_split", "comparison", {
+        early_median: 4.6,
+        late_median: 10.9,
+        early_span: "2024-01-2024-06",
+        late_span: "2024-07-2024-12",
+        multiplier: 2.4,
+      })
+    );
+    expect(split).not.toContain("Split at");
+    expect(split).toContain("across $finding:churn_split.early_span");
+    // A null multiplier (signed medians) drops the ratio clause entirely.
+    const signed = realizeClaim(
+      F("signed_split", "comparison", {
+        early_median: -5,
+        late_median: 5,
+        early_span: "a",
+        late_span: "b",
+        multiplier: null,
+      })
+    );
+    expect(signed).not.toContain("×");
+  });
+
+  it("checks render definition + scalar evidence bindings, never booleans inline", () => {
+    const text = realizeClaim(FINDINGS[3]);
+    expect(text).toContain("⚠ FAILED");
+    expect(text).toContain("$finding:zero_screen.evidence.n_excluded");
+    expect(text).not.toContain("$finding:zero_screen.passed");
+  });
+
+  it("INSIGHT nodes pass their text through; empty nodes render null", () => {
+    const byName = new Map(FINDINGS.map((f) => [f.name, f]));
+    expect(realizeNode({ id: "i", op: "INSIGHT", refs: [], text: "Synthesis." }, byName)).toBe(
+      "Synthesis."
+    );
+    expect(realizeNode({ id: "x", op: "NOTE", refs: ["ghost"] }, byName)).toBeNull();
+  });
+});
+
+describe("compileDashboard — deterministic, identity-keyed, overlay-aware", () => {
+  const plan = {
+    nodes: [
+      { id: "n_answer", op: "ANSWER" as const, refs: ["price_trend"] },
+      { id: "n_peak", op: "PEAK" as const, refs: ["price_peak"] },
+      { id: "n_caveat", op: "CAVEAT" as const, refs: ["zero_screen"] },
+    ],
+  };
+  const input = {
+    manifest: MANIFEST,
+    product: PRODUCT,
+    plan,
+    overlay: {},
+    headlinePlan: [{ binding: "$finding:price_peak.value", label: "Peak", reason: "peak" }],
+    question: "How have prices changed?",
+  };
+
+  it("compiles banner + tiles + narrative + charts + root, byte-deterministic", () => {
+    const lines = compileDashboard(input);
+    const again = compileDashboard(input);
+    expect(lines).toEqual(again); // same input, same bytes
+    const joined = lines.join("\n");
+    expect(joined).toContain("compiled_check_banner"); // failed check first
+    expect(joined).toContain('"tile_0"');
+    expect(joined).toContain("/elements/n_answer");
+    expect(joined).toContain("chart_annual_prices");
+    // Chart carries screened measure AND its raw sibling.
+    expect(joined).toContain('"median","median_raw"');
+    expect(lines[lines.length - 1]).toContain('"compiled_root"');
+  });
+
+  it("form carries the story: answer callout, caveat annotations, evidence seam", () => {
+    const withCaveat = {
+      ...input,
+      plan: {
+        nodes: [
+          { id: "n_answer", op: "ANSWER" as const, refs: ["price_trend"] },
+          { id: "n_caveat", op: "CAVEAT" as const, refs: ["zero_screen"] },
+        ],
+      },
+    };
+    const lines = compileDashboard(withCaveat);
+    const byPath = new Map(
+      lines
+        .map(
+          (l) =>
+            JSON.parse(l) as {
+              path: string;
+              value?: { type?: string; props?: Record<string, unknown> };
+            }
+        )
+        .map((p) => [p.path, p])
+    );
+    // ANSWER leads as a styled insight callout, not undifferentiated body text.
+    expect(byPath.get("/elements/n_answer")?.value?.props?.variant).toBe("insight");
+    // CAVEATs are visually distinct annotations; zero_screen failed → warning.
+    const caveat = byPath.get("/elements/n_caveat")?.value;
+    expect(caveat?.type).toBe("Annotation");
+    expect(caveat?.props?.severity).toBe("warning");
+    // A seam separates narrative from the chart block.
+    expect(byPath.get("/elements/compiled_evidence_break")?.value?.type).toBe("SectionBreak");
+  });
+
+  it("purpose + regimes govern the shipped view family; overlay can hide any view", () => {
+    const flagged = {
+      ...input,
+      purpose: "report",
+      regimes: { annual_prices: { flags: ["THIN_PERIODS"] } },
+    };
+    const joined = compileDashboard(flagged).join("\n");
+    expect(joined).toContain("chart_annual_prices__counts"); // regime-forced evidence
+    expect(joined).toContain("table_annual_prices"); // document style
+    // Dashboard default with no flags ships neither — byte-compatible depth.
+    const plain = compileDashboard(input).join("\n");
+    expect(plain).not.toContain("__counts");
+    expect(plain).not.toContain("table_annual_prices");
+    // The overlay grammar governs views like every other element.
+    const hiddenCov = compileDashboard({
+      ...flagged,
+      overlay: { hidden: ["chart_annual_prices__counts"] },
+    }).join("\n");
+    expect(hiddenCov).not.toContain("__counts");
+  });
+
+  it("overlay hides and reorders by stable id, surviving recompiles", () => {
+    const lines = compileDashboard({
+      ...input,
+      overlay: { hidden: ["n_peak"], order: ["chart_annual_prices", "n_answer"] },
+    });
+    const joined = lines.join("\n");
+    expect(joined).not.toContain("/elements/n_peak");
+    const root = JSON.parse(lines[lines.length - 2]) as { value: { children: string[] } };
+    expect(root.value.children[0]).toBe("chart_annual_prices");
+  });
+
+  it("temporal x compiles to LineChart, categorical to BarChart", () => {
+    expect(componentForSeries(PRODUCT.series[0])).toBe("LineChart");
+    expect(
+      componentForSeries({
+        ...PRODUCT.series[0],
+        roles: { ...PRODUCT.series[0].roles, x: { column: "cuisine", kind: "categorical" } },
+      })
+    ).toBe("BarChart");
+  });
+});
+
+describe("document grammar — sections, explainers, anchors (spec §14)", () => {
+  const docPlan = {
+    nodes: [
+      {
+        id: "d_method",
+        op: "METHOD" as const,
+        refs: ["price_trend"],
+        text: "Prices were fit per period and screened for sentinel zeros.",
+      },
+      { id: "d_answer", op: "ANSWER" as const, refs: ["price_trend"] },
+      { id: "d_section", op: "SECTION" as const, refs: [], text: "The long arc" },
+      {
+        id: "d_explain",
+        op: "EXPLAIN" as const,
+        refs: ["price_trend"],
+        text: "The line climbs steadily; the slope is $finding:price_trend.slope_per_period per period.",
+        anchor: "chart_annual_prices",
+      },
+      {
+        id: "d_callout",
+        op: "CALLOUT" as const,
+        refs: ["price_peak"],
+        text: "The raw extreme sits on thin coverage — read the attested peak instead.",
+      },
+      {
+        id: "d_conclusion",
+        op: "CONCLUSION" as const,
+        refs: ["price_trend"],
+        text: "Prices rose across the observed window.",
+      },
+      {
+        id: "d_next",
+        op: "NEXT_STEPS" as const,
+        refs: [],
+        text: "Would a per-category split change the story?",
+      },
+      { id: "d_limits", op: "LIMITS" as const, refs: [], text: "No causal claims are made here." },
+    ],
+  };
+
+  it("validatePlan: refless ops stand alone; text-required ops must be authored", () => {
+    const ok = validatePlan(docPlan, FINDINGS);
+    expect(ok.ok).toBe(true);
+    const noText = validatePlan(
+      {
+        nodes: [
+          { id: "a", op: "ANSWER", refs: ["price_trend"] },
+          { id: "s", op: "SECTION", refs: [] },
+        ],
+      },
+      FINDINGS
+    );
+    expect(noText.ok).toBe(false);
+    expect(noText.errors.join()).toContain("requires authored text");
+    // EXPLAIN is not refless — an explainer must say WHICH claims it narrates.
+    const orphanExplain = validatePlan(
+      {
+        nodes: [
+          { id: "a", op: "ANSWER", refs: ["price_trend"] },
+          { id: "e", op: "EXPLAIN", refs: [], text: "The chart shows the rise." },
+        ],
+      },
+      FINDINGS
+    );
+    expect(orphanExplain.ok).toBe(false);
+    expect(orphanExplain.errors.join()).toContain("references no claim");
+  });
+
+  it("compile maps document ops to distinct forms: heading, flag callout, insight close", () => {
+    const lines = compileDashboard({
+      manifest: MANIFEST,
+      product: PRODUCT,
+      plan: docPlan,
+      overlay: {},
+      headlinePlan: [],
+      question: "How have prices changed?",
+    });
+    const byPath = new Map(
+      lines
+        .map(
+          (l) =>
+            JSON.parse(l) as {
+              path: string;
+              value?: { type?: string; props?: Record<string, unknown>; children?: string[] };
+            }
+        )
+        .map((p) => [p.path, p])
+    );
+    expect(byPath.get("/elements/d_section")?.value?.props?.variant).toBe("heading");
+    const callout = byPath.get("/elements/d_callout")?.value;
+    expect(callout?.type).toBe("Annotation");
+    expect(callout?.props?.icon).toBe("flag");
+    expect(callout?.props?.severity).toBe("info");
+    expect(byPath.get("/elements/d_conclusion")?.value?.props?.variant).toBe("insight");
+    expect(byPath.get("/elements/d_method")?.value?.props?.variant).toBeUndefined();
+  });
+
+  it("anchors weave the chart in AFTER its explainer and out of the evidence block", () => {
+    const lines = compileDashboard({
+      manifest: MANIFEST,
+      product: PRODUCT,
+      plan: docPlan,
+      overlay: {},
+      headlinePlan: [],
+      question: "How have prices changed?",
+    });
+    const root = JSON.parse(lines[lines.length - 2]) as { value: { children: string[] } };
+    const kids = root.value.children;
+    expect(kids.indexOf("chart_annual_prices")).toBe(kids.indexOf("d_explain") + 1);
+    // The only shipped view is anchored — no dangling "Evidence" seam.
+    expect(kids).not.toContain("compiled_evidence_break");
+    // The chart's patch is emitted exactly once.
+    expect(lines.filter((l) => l.includes('"/elements/chart_annual_prices"')).length).toBe(1);
+  });
+
+  it("unknown anchors are ignored; unanchored views keep the evidence seam", () => {
+    const plan = {
+      nodes: [
+        { id: "a", op: "ANSWER" as const, refs: ["price_trend"] },
+        {
+          id: "e",
+          op: "EXPLAIN" as const,
+          refs: ["price_trend"],
+          text: "The trend explained.",
+          anchor: "chart_does_not_exist",
+        },
+      ],
+    };
+    const lines = compileDashboard({
+      manifest: MANIFEST,
+      product: PRODUCT,
+      plan,
+      overlay: {},
+      headlinePlan: [],
+      question: "q",
+    });
+    const root = JSON.parse(lines[lines.length - 2]) as { value: { children: string[] } };
+    expect(root.value.children).not.toContain("chart_does_not_exist");
+    // Chart still ships, below the seam.
+    expect(root.value.children.indexOf("compiled_evidence_break")).toBeLessThan(
+      root.value.children.indexOf("chart_annual_prices")
+    );
+  });
+
+  it("realizeNode: document ops without authored text render nothing", () => {
+    const byName = new Map(FINDINGS.map((f) => [f.name, f]));
+    expect(realizeNode({ id: "x", op: "METHOD", refs: ["price_trend"] }, byName)).toBeNull();
+    expect(realizeNode({ id: "y", op: "SECTION", refs: [] }, byName)).toBeNull();
+    // EXPLAIN is narrative-first but falls back to the claim template.
+    expect(realizeNode({ id: "z", op: "EXPLAIN", refs: ["price_trend"] }, byName)).toContain(
+      "$finding:price_trend"
+    );
+  });
+
+  it("planner prompt teaches the document vocabulary and chart anchoring", () => {
+    const sys = buildPlannerSystem("report");
+    for (const word of [
+      "SECTION",
+      "EXPLAIN",
+      "CALLOUT",
+      "METHOD",
+      "CONCLUSION",
+      "NEXT_STEPS",
+      "LIMITS",
+      "anchor",
+    ]) {
+      expect(sys).toContain(word);
+    }
+    expect(planBudget("report").guidance).toContain("METHOD");
+    expect(planBudget("deep-dive").guidance).toContain("CALLOUT");
+  });
+});
+
+describe("mutations — one governed edit channel", () => {
+  const doc: PlanDocument = {
+    mode: "compiled",
+    plan: {
+      nodes: [
+        { id: "a", op: "ANSWER", refs: ["price_trend"] },
+        { id: "b", op: "PEAK", refs: ["price_peak"] },
+      ],
+    },
+    overlay: {},
+  };
+
+  it("move/hide/add/remove/set_insight round-trip and re-validate", () => {
+    const r1 = applyMutations(doc, [
+      { kind: "move", id: "b", before: "a" },
+      { kind: "hide", id: "b" },
+      // Note the digit-free text: authored prose with a literal figure is
+      // now a validation error (every figure must bind) — the old fixture
+      // "after 1950" fails by design.
+      { kind: "set_insight", text: "The rise concentrates after the split point." },
+      { kind: "add_node", node: { op: "CAVEAT", refs: ["zero_screen"] } },
+    ]);
+    expect(r1.errors).toEqual([]);
+    expect(r1.applied).toBe(4);
+    expect(r1.doc.overlay.order![0]).toBe("b");
+    expect(r1.doc.overlay.hidden).toContain("b");
+    expect(validatePlan(r1.doc.plan, FINDINGS).ok).toBe(true);
+    // Original untouched (pure).
+    expect(doc.plan.nodes).toHaveLength(2);
+    const r2 = applyMutations(r1.doc, [{ kind: "remove_node", id: "zzz" }]);
+    expect(r2.errors[0]).toContain("unknown node");
+  });
+
+  it("unique ids for added nodes", () => {
+    const ids = new Set([nextPlanNodeId(), nextPlanNodeId(), nextPlanNodeId()]);
+    expect(ids.size).toBe(3);
+    expect(PLAN_OPS).toContain("INSIGHT");
+  });
+});

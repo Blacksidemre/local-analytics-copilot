@@ -1,0 +1,1315 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# ─────────────────────────────────────────────────────────
+#  Hermetic — One-command setup & run
+# ─────────────────────────────────────────────────────────
+
+# Ensure common install locations are in PATH
+# (microsandbox installs to ~/.local/bin, Homebrew to various locations)
+for p in "$HOME/.local/bin" "$HOME/.msb/bin" "/usr/local/bin" "/opt/homebrew/bin"; do
+  [[ -d "$p" ]] && [[ ":$PATH:" != *":$p:"* ]] && export PATH="$p:$PATH"
+done
+
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+BOLD='\033[1m'
+DIM='\033[2m'
+RESET='\033[0m'
+
+# ── Headless mode: --headless / -y skips every interactive question by
+# answering each prompt with an empty string, which selects that prompt's
+# documented default ("[Y/n]" → yes, "[c]" → c, key prompts → skip). The
+# flag is exported so sourced/child scripts (install-mcp.sh) inherit it.
+# Implemented by shadowing the `read` builtin rather than editing 40 call
+# sites — under `set -e`, redirecting stdin from /dev/null would instead
+# abort at the first EOF'd read.
+HEADLESS=false
+for _arg in "$@"; do
+  case "$_arg" in
+    --headless|--yes|-y) HEADLESS=true ;;
+    -h|--help)
+      echo "Usage: ./start.sh [--headless|-y]"
+      echo "  --headless, -y   non-interactive: skip all questions, accept every default"
+      exit 0
+      ;;
+  esac
+done
+export HERMETIC_HEADLESS=$([ "$HEADLESS" = true ] && echo 1 || echo 0)
+if $HEADLESS; then
+  read() {
+    # Assign "" to the target variable (last argument; flags like -r skipped).
+    local _var="${!#}"
+    if [ $# -gt 0 ] && [[ "$_var" != -* ]]; then
+      printf -v "$_var" '%s' ""
+    else
+      REPLY=""
+    fi
+    echo ""  # terminate the `echo -n`-style prompt line
+    return 0
+  }
+  echo -e "${DIM}Headless mode: all prompts auto-answered with defaults.${RESET}"
+fi
+
+step=0
+step() {
+  step=$((step + 1))
+  echo ""
+  echo -e "${BLUE}[$step]${RESET} ${BOLD}$1${RESET}"
+}
+
+ok()   { echo -e "    ${GREEN}✓${RESET} $1"; }
+warn() { echo -e "    ${YELLOW}!${RESET} $1"; }
+fail() { echo -e "    ${RED}✗ $1${RESET}"; echo ""; exit 1; }
+
+# ── Helper: install a local inference backend ──────────────
+setup_local_backend() {
+  # Detect platform
+  local IS_APPLE_SILICON=false
+  local IS_MAC=false
+  local IS_LINUX=false
+  if [ "$(uname -s)" = "Darwin" ]; then
+    IS_MAC=true
+    [ "$(uname -m)" = "arm64" ] && IS_APPLE_SILICON=true
+  elif [ "$(uname -s)" = "Linux" ]; then
+    IS_LINUX=true
+  fi
+
+  echo ""
+  echo -e "    Choose a local inference backend:"
+  echo ""
+  if $IS_APPLE_SILICON; then
+    echo -e "    ${BOLD}a)${RESET} MLX ${DIM}— fastest on Apple Silicon (recommended)${RESET}"
+  fi
+  echo -e "    ${BOLD}b)${RESET} llama.cpp ${DIM}— cross-platform, GGUF models${RESET}"
+  echo -e "    ${BOLD}c)${RESET} Ollama ${DIM}— easiest setup, manages models for you${RESET}"
+  echo -e "    ${BOLD}s)${RESET} Skip ${DIM}— set up later in Settings${RESET}"
+  echo ""
+  if $IS_APPLE_SILICON; then
+    echo -n "    Choose backend [a]: "
+  else
+    echo -n "    Choose backend [c]: "
+  fi
+  read -r LOCAL_CHOICE
+
+  # Default: MLX on Apple Silicon, Ollama otherwise
+  if [ -z "$LOCAL_CHOICE" ]; then
+    if $IS_APPLE_SILICON; then LOCAL_CHOICE="a"; else LOCAL_CHOICE="c"; fi
+  fi
+
+  case "$LOCAL_CHOICE" in
+    s|S)
+      ok "Skipped — configure local models any time in Settings → Local Models"
+      return 0
+      ;;
+    a|A)
+      if ! $IS_APPLE_SILICON; then
+        warn "MLX requires Apple Silicon (M1/M2/M3/M4). Use llama.cpp or Ollama instead."
+        return 1
+      fi
+
+      echo ""
+      local HAS_BREW=false
+      command -v brew &>/dev/null && HAS_BREW=true
+
+      # Check Python
+      if ! command -v python3 &>/dev/null; then
+        warn "Python 3 is required for MLX."
+        if $HAS_BREW; then
+          echo -e "    ${DIM}Installing Python via Homebrew...${RESET}"
+          if brew install python 2>&1 | tail -3; then
+            ok "Python 3 installed"
+          else
+            echo ""
+            echo -e "      ${BOLD}brew install python${RESET}"
+            echo -e "      ${DIM}— or download from:${RESET} ${BLUE}https://www.python.org/downloads/${RESET}"
+            return 1
+          fi
+        else
+          echo -e "      Install with: ${BOLD}brew install python${RESET}"
+          echo -e "      ${DIM}— or download from:${RESET} ${BLUE}https://www.python.org/downloads/${RESET}"
+          return 1
+        fi
+      fi
+      ok "Python 3 found: $(python3 --version 2>&1)"
+
+      # Check mlx-lm (Homebrew installs into its own venv, so also check for the CLI)
+      if python3 -c "import mlx_lm" 2>/dev/null || command -v mlx_lm.server &>/dev/null || command -v mlx_lm &>/dev/null; then
+        ok "mlx-lm already installed"
+      else
+        echo ""
+        echo -e "    ${BOLD}mlx-lm${RESET} (the MLX inference library) is not installed."
+        echo ""
+        if $HAS_BREW; then
+          echo -e "    ${BOLD}1)${RESET} Install now ${DIM}— runs: brew install mlx-lm${RESET}"
+        else
+          echo -e "    ${BOLD}1)${RESET} Install now ${DIM}— runs: pip install mlx-lm${RESET}"
+        fi
+        echo -e "    ${BOLD}2)${RESET} I'll install it myself in another terminal"
+        echo ""
+        echo -n "    Choose [1]: "
+        read -r MLX_INSTALL_CHOICE
+
+        case "$MLX_INSTALL_CHOICE" in
+          2)
+            echo ""
+            echo -e "    Run one of these in another terminal:"
+            echo ""
+            echo -e "      ${BOLD}brew install mlx-lm${RESET}"
+            echo -e "      ${DIM}— or:${RESET}"
+            echo -e "      ${BOLD}pip install mlx-lm${RESET}"
+            echo ""
+            warn "Install mlx-lm, then configure in Settings → Local Models → MLX"
+            return 0
+            ;;
+          *)
+            echo ""
+            if $HAS_BREW; then
+              echo -e "    Installing mlx-lm via Homebrew..."
+              if brew install mlx-lm 2>&1 | tail -5; then
+                echo ""
+                ok "mlx-lm installed successfully"
+              else
+                warn "brew install failed. Falling back to pip..."
+                if pip install mlx-lm 2>&1 | tail -3; then
+                  echo ""
+                  ok "mlx-lm installed successfully"
+                else
+                  pip3 install mlx-lm 2>&1 | tail -3 || true
+                  if python3 -c "import mlx_lm" 2>/dev/null || command -v mlx_lm.server &>/dev/null; then
+                    ok "mlx-lm installed successfully"
+                  else
+                    warn "Failed to install mlx-lm. Try manually: brew install mlx-lm"
+                    return 1
+                  fi
+                fi
+              fi
+            else
+              echo -e "    Installing mlx-lm via pip..."
+              if pip install mlx-lm 2>&1 | tail -3; then
+                echo ""
+                ok "mlx-lm installed successfully"
+              else
+                echo ""
+                warn "pip install failed. Trying pip3..."
+                if pip3 install mlx-lm 2>&1 | tail -3; then
+                  echo ""
+                  ok "mlx-lm installed successfully"
+                else
+                  echo ""
+                  warn "Failed to install mlx-lm. Try: brew install mlx-lm or pip install mlx-lm"
+                  return 1
+                fi
+              fi
+            fi
+            ;;
+        esac
+      fi
+
+      # Check huggingface-cli for model downloads
+      if python3 -c "import huggingface_hub" 2>/dev/null; then
+        ok "huggingface-hub available (for model downloads)"
+      else
+        echo -e "    ${DIM}Installing huggingface-hub for model downloads...${RESET}"
+        if $HAS_BREW; then
+          brew install huggingface-cli 2>/dev/null || pip install huggingface-hub 2>/dev/null || pip3 install huggingface-hub 2>/dev/null || true
+        else
+          pip install huggingface-hub 2>/dev/null || pip3 install huggingface-hub 2>/dev/null || true
+        fi
+      fi
+
+      ok "MLX backend ready — choose a model in Settings → Local Models → MLX after launch"
+      ;;
+
+    b|B)
+      echo ""
+      # Check if llama-server is available
+      local LLAMA_SERVER_PATH=""
+      if command -v llama-server &>/dev/null; then
+        LLAMA_SERVER_PATH="$(command -v llama-server)"
+      elif [ -x "$(pwd)/data/bin/llama-server" ]; then
+        LLAMA_SERVER_PATH="$(pwd)/data/bin/llama-server"
+      fi
+
+      if [ -n "$LLAMA_SERVER_PATH" ]; then
+        ok "llama-server found: $LLAMA_SERVER_PATH"
+      else
+        echo -e "    ${BOLD}llama-server${RESET} (the llama.cpp HTTP server) is not installed."
+        echo ""
+
+        if $IS_MAC; then
+          echo -e "    ${BOLD}1)${RESET} Install now via Homebrew ${DIM}— runs: brew install llama.cpp${RESET}"
+          echo -e "    ${BOLD}2)${RESET} I'll install it myself in another terminal"
+          echo ""
+          echo -n "    Choose [1]: "
+          read -r LLAMA_INSTALL_CHOICE
+
+          case "$LLAMA_INSTALL_CHOICE" in
+            2)
+              echo ""
+              echo -e "    Run one of these in another terminal:"
+              echo ""
+              echo -e "      ${BOLD}brew install llama.cpp${RESET}"
+              echo -e "      ${DIM}— or build from source:${RESET}"
+              echo -e "      ${BOLD}git clone https://github.com/ggerganov/llama.cpp && cd llama.cpp && make llama-server${RESET}"
+              echo ""
+              warn "Install llama-server, then configure in Settings → Local Models → llama.cpp"
+              return 0
+              ;;
+            *)
+              echo ""
+              if command -v brew &>/dev/null; then
+                echo -e "    Installing llama.cpp via Homebrew..."
+                if brew install llama.cpp 2>&1 | tail -5; then
+                  echo ""
+                  ok "llama.cpp installed"
+                else
+                  warn "brew install failed. Install manually: brew install llama.cpp"
+                  return 1
+                fi
+              else
+                warn "Homebrew not found. Install llama.cpp manually: brew install llama.cpp"
+                return 1
+              fi
+              ;;
+          esac
+
+        elif $IS_LINUX; then
+          echo -e "    ${BOLD}1)${RESET} Install now ${DIM}— clones and builds llama.cpp${RESET}"
+          echo -e "    ${BOLD}2)${RESET} I'll install it myself in another terminal"
+          echo ""
+          echo -n "    Choose [1]: "
+          read -r LLAMA_INSTALL_CHOICE
+
+          case "$LLAMA_INSTALL_CHOICE" in
+            2)
+              echo ""
+              echo -e "    Run this in another terminal:"
+              echo ""
+              echo -e "      ${BOLD}git clone https://github.com/ggerganov/llama.cpp && cd llama.cpp && make llama-server${RESET}"
+              echo -e "      ${BOLD}sudo cp build/bin/llama-server /usr/local/bin/${RESET}"
+              echo ""
+              warn "Install llama-server, then configure in Settings → Local Models → llama.cpp"
+              return 0
+              ;;
+            *)
+              echo ""
+              echo -e "    Building llama.cpp from source..."
+              local LLAMA_BUILD_DIR="/tmp/llama-cpp-build-$$"
+              if ! command -v cmake &>/dev/null; then
+                warn "cmake is required to build llama.cpp."
+                echo -e "      Install it with: ${BOLD}sudo apt install cmake build-essential${RESET}"
+                return 1
+              fi
+
+              git clone --depth 1 https://github.com/ggerganov/llama.cpp "$LLAMA_BUILD_DIR" 2>&1 | tail -2
+              cd "$LLAMA_BUILD_DIR"
+              cmake -B build -DBUILD_SHARED_LIBS=OFF 2>&1 | tail -3
+              cmake --build build --target llama-server -j "$(nproc 2>/dev/null || echo 4)" 2>&1 | tail -5
+              cd - >/dev/null
+
+              # Install to project-local bin
+              mkdir -p "$(pwd)/data/bin"
+              cp "$LLAMA_BUILD_DIR/build/bin/llama-server" "$(pwd)/data/bin/llama-server"
+              chmod +x "$(pwd)/data/bin/llama-server"
+              rm -rf "$LLAMA_BUILD_DIR"
+              ok "llama-server installed to data/bin/llama-server"
+              ;;
+          esac
+        else
+          warn "Unsupported platform. Install llama-server manually from: https://github.com/ggerganov/llama.cpp"
+          return 1
+        fi
+      fi
+
+      # Check huggingface-cli for GGUF downloads
+      if command -v python3 &>/dev/null && python3 -c "import huggingface_hub" 2>/dev/null; then
+        ok "huggingface-hub available (for model downloads)"
+      elif command -v python3 &>/dev/null; then
+        echo -e "    ${DIM}Installing huggingface-hub for model downloads...${RESET}"
+        pip install huggingface-hub 2>/dev/null || pip3 install huggingface-hub 2>/dev/null || true
+      fi
+
+      ok "llama.cpp backend ready — choose a model in Settings → Local Models → llama.cpp after launch"
+      ;;
+
+    c|C)
+      echo ""
+      if command -v ollama &>/dev/null; then
+        ok "Ollama already installed"
+
+        # Check if it's running
+        if curl -s -o /dev/null --max-time 2 http://localhost:11434 2>/dev/null; then
+          ok "Ollama server is running"
+        else
+          warn "Ollama is installed but not running"
+          echo -e "    ${DIM}Start it with: ${BOLD}ollama serve${RESET}"
+          echo -e "    ${DIM}Or launch the Ollama app.${RESET}"
+        fi
+      else
+        echo -e "    ${BOLD}Ollama${RESET} is not installed."
+        echo ""
+
+        if $IS_MAC; then
+          echo -e "    ${BOLD}1)${RESET} Install now via Homebrew ${DIM}— runs: brew install ollama${RESET}"
+          echo -e "    ${BOLD}2)${RESET} I'll install it myself ${DIM}— download from ollama.com${RESET}"
+          echo ""
+          echo -n "    Choose [1]: "
+          read -r OLLAMA_INSTALL_CHOICE
+
+          case "$OLLAMA_INSTALL_CHOICE" in
+            2)
+              echo ""
+              echo -e "    Download Ollama from: ${BLUE}https://ollama.com/download${RESET}"
+              echo -e "    Or run: ${BOLD}brew install ollama${RESET}"
+              echo ""
+              echo -e "    After installing, start it:"
+              echo -e "      ${BOLD}ollama serve${RESET}"
+              echo ""
+              warn "Install Ollama, then configure in Settings → Local Models → Ollama"
+              return 0
+              ;;
+            *)
+              echo ""
+              if command -v brew &>/dev/null; then
+                echo -e "    Installing Ollama via Homebrew..."
+                if brew install ollama 2>&1 | tail -5; then
+                  echo ""
+                  ok "Ollama installed"
+                  echo -e "    ${DIM}Starting Ollama server...${RESET}"
+                  ollama serve &>/dev/null &
+                  disown $! 2>/dev/null || true
+                  sleep 2
+                  if curl -s -o /dev/null --max-time 2 http://localhost:11434 2>/dev/null; then
+                    ok "Ollama server started"
+                  else
+                    warn "Ollama installed but server may need a moment to start"
+                  fi
+                else
+                  warn "brew install failed. Download from: https://ollama.com/download"
+                  return 1
+                fi
+              else
+                warn "Homebrew not found. Download Ollama from: https://ollama.com/download"
+                return 1
+              fi
+              ;;
+          esac
+
+        elif $IS_LINUX; then
+          echo -e "    ${BOLD}1)${RESET} Install now ${DIM}— runs the official install script${RESET}"
+          echo -e "    ${BOLD}2)${RESET} I'll install it myself in another terminal"
+          echo ""
+          echo -n "    Choose [1]: "
+          read -r OLLAMA_INSTALL_CHOICE
+
+          case "$OLLAMA_INSTALL_CHOICE" in
+            2)
+              echo ""
+              echo -e "    Run this in another terminal:"
+              echo ""
+              echo -e "      ${BOLD}curl -fsSL https://ollama.ai/install.sh | sh${RESET}"
+              echo ""
+              warn "Install Ollama, then configure in Settings → Local Models → Ollama"
+              return 0
+              ;;
+            *)
+              echo ""
+              echo -e "    Running Ollama install script..."
+              if curl -fsSL https://ollama.ai/install.sh | sh 2>&1 | tail -5; then
+                echo ""
+                ok "Ollama installed"
+              else
+                warn "Install failed. Try manually: curl -fsSL https://ollama.ai/install.sh | sh"
+                return 1
+              fi
+              ;;
+          esac
+        else
+          warn "Download Ollama from: https://ollama.com/download"
+          return 1
+        fi
+      fi
+
+      ok "Ollama backend ready — choose a model in Settings → Local Models → Ollama after launch"
+      ;;
+
+    *)
+      warn "Invalid choice. You can set up local models later in Settings → Local Models."
+      ;;
+  esac
+}
+
+echo ""
+echo -e "${BOLD}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${RESET}"
+echo -e "${BOLD}  Hermetic — Setup & Launch${RESET}"
+echo -e "${BOLD}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${RESET}"
+
+# ── 1. Check Node.js ──────────────────────────────────────
+step "Checking Node.js"
+
+if ! command -v node &>/dev/null; then
+  fail "Node.js is not installed.
+
+    Please install Node.js 18 or later:
+      • Mac:     brew install node
+      • Or:      https://nodejs.org (download the LTS installer)
+
+    Then re-run this script."
+fi
+
+NODE_VERSION=$(node -v | sed 's/v//' | cut -d. -f1)
+if [ "$NODE_VERSION" -lt 18 ]; then
+  fail "Node.js $NODE_VERSION found, but version 18+ is required.
+
+    Please update Node.js:
+      • Mac:     brew upgrade node
+      • Or:      https://nodejs.org (download the LTS installer)
+
+    Then re-run this script."
+fi
+
+ok "Node.js $(node -v)"
+
+# ── 1b. Launch mode: embedded desktop app vs web+Docker (build log D15) ──────
+# Two ways to run Hermetic:
+#   • the embedded DESKTOP app (Tauri + the WASM sandbox) — NO Docker, and the same
+#     thing a non-technical user downloads as an executable; and
+#   • the WEB app + Docker — this cloned repo's DEFAULT (unchanged behavior).
+# Headless (-y) always takes the default (web+Docker), so CI/automation is untouched.
+step "Choose how to run"
+
+# Locate a built native binary (produced by `pnpm desktop:build`).
+NATIVE_BIN=""
+for _c in \
+  "src-tauri/target/release/hermetic-desktop" \
+  src-tauri/target/release/bundle/appimage/*.AppImage; do
+  [ -e "$_c" ] && { NATIVE_BIN="$_c"; break; }
+done
+HAS_TAURI_CLI=false
+[ -x node_modules/.bin/tauri ] && HAS_TAURI_CLI=true
+
+echo ""
+echo -e "    ${BOLD}1)${RESET} Desktop app ${DIM}— embedded, no Docker (WASM runtime)${RESET}   [$([ -n "$NATIVE_BIN" ] && echo "${GREEN}built${RESET}" || echo "${YELLOW}not built${RESET}")]"
+echo -e "    ${BOLD}2)${RESET} Desktop app — dev mode ${DIM}— tauri dev, no Docker${RESET}       [$($HAS_TAURI_CLI && echo "${GREEN}ready${RESET}" || echo "${YELLOW}installs deps${RESET}")]"
+echo -e "    ${BOLD}3)${RESET} Web app + Docker ${DIM}— this repo's default${RESET}               ${GREEN}[default]${RESET}"
+echo ""
+echo -n "    Choose [3]: "
+read -r LAUNCH_MODE
+LAUNCH_MODE="${LAUNCH_MODE:-3}"
+
+launch_native_binary() {
+  if [ -z "$NATIVE_BIN" ]; then
+    warn "No built desktop app found."
+    echo -e "    Build it with: ${BOLD}pnpm desktop:build${RESET}  ${DIM}(needs the Rust toolchain + webkit dev headers)${RESET}"
+    echo -e "    …or download a prebuilt executable from the releases page."
+    echo -n "    Build it now? [y/N]: "
+    read -r _b
+    if [[ "${_b:-n}" =~ ^[Yy]$ ]]; then
+      command -v cargo &>/dev/null || fail "cargo (Rust) not found — install from https://rustup.rs then re-run."
+      pnpm install --frozen-lockfile >/dev/null 2>&1 || pnpm install
+      pnpm desktop:build || fail "desktop build failed"
+      for _c in "src-tauri/target/release/hermetic-desktop" src-tauri/target/release/bundle/appimage/*.AppImage; do
+        [ -e "$_c" ] && { NATIVE_BIN="$_c"; break; }
+      done
+    else
+      echo -e "    ${DIM}Falling back to Web app + Docker.${RESET}"
+      return 1
+    fi
+  fi
+  [ -n "$NATIVE_BIN" ] || return 1
+  ok "Launching the desktop app (no Docker) — $NATIVE_BIN"
+  echo -e "    ${DIM}Press Ctrl+C to stop.${RESET}"
+  exec "$NATIVE_BIN"
+}
+
+case "$LAUNCH_MODE" in
+  1)
+    launch_native_binary || true # falls through to Web+Docker on decline
+    if [ -n "$NATIVE_BIN" ]; then exec "$NATIVE_BIN"; fi
+    ;;
+  2)
+    ok "Desktop app in dev mode (tauri dev) — no Docker"
+    if ! $HAS_TAURI_CLI; then
+      pnpm install --frozen-lockfile >/dev/null 2>&1 || pnpm install
+    fi
+    command -v cargo &>/dev/null || fail "cargo (Rust) not found — install from https://rustup.rs then re-run."
+    echo -e "    ${DIM}Starting the Next dev server + the Tauri window. Press Ctrl+C to stop.${RESET}"
+    exec pnpm desktop:dev
+    ;;
+  *)
+    ok "Web app + Docker (default)"
+    ;;
+esac
+
+# ── 2. Choose sandbox runtime ────────────────────────────
+step "Choosing sandbox runtime"
+
+# Detect what's available
+HAS_DOCKER=false
+HAS_MSB=false
+HAS_E2B=false
+command -v docker &>/dev/null && docker info &>/dev/null 2>&1 && HAS_DOCKER=true
+command -v msb &>/dev/null && HAS_MSB=true
+([ -f .env.local ] && grep -q "^E2B_API_KEY=" .env.local 2>/dev/null) && HAS_E2B=true
+[ -n "${E2B_API_KEY:-}" ] && HAS_E2B=true
+
+status_tag() {
+  if $1; then
+    echo -e "${GREEN}installed${RESET}"
+  else
+    echo -e "${DIM}not found${RESET}"
+  fi
+}
+
+# If .env.local already exists with a runtime, use it as default
+SAVED_RUNTIME=""
+if [ -f .env.local ] && grep -q "^SANDBOX_RUNTIME=" .env.local 2>/dev/null; then
+  SAVED_RUNTIME=$(grep "^SANDBOX_RUNTIME=" .env.local | cut -d= -f2)
+fi
+
+# Determine default selection for the prompt
+DEFAULT_NUM="1"
+if [ "$SAVED_RUNTIME" = "microsandbox" ]; then
+  DEFAULT_NUM="2"
+elif [ "$SAVED_RUNTIME" = "e2b" ]; then
+  DEFAULT_NUM="3"
+elif [ -n "$SAVED_RUNTIME" ]; then
+  DEFAULT_NUM="1"
+elif $HAS_MSB; then
+  DEFAULT_NUM="2"
+elif $HAS_E2B && ! $HAS_DOCKER; then
+  DEFAULT_NUM="3"
+fi
+
+echo ""
+echo -e "    Choose a sandbox runtime for executing Python code:"
+echo ""
+echo -e "    ${BOLD}1)${RESET} Docker        ${DIM}— containers${RESET}            [$(status_tag $HAS_DOCKER)]"
+echo -e "    ${BOLD}2)${RESET} Microsandbox  ${DIM}— lightweight microVMs${RESET}  [$(status_tag $HAS_MSB)]"
+echo -e "    ${BOLD}3)${RESET} E2B           ${DIM}— cloud sandboxes${RESET}       [$(status_tag $HAS_E2B)]"
+echo ""
+echo -n "    Choose runtime [$DEFAULT_NUM]: "
+read -r RUNTIME_CHOICE
+RUNTIME_CHOICE="${RUNTIME_CHOICE:-$DEFAULT_NUM}"
+
+case "$RUNTIME_CHOICE" in
+  2) RUNTIME="microsandbox" ;;
+  3) RUNTIME="e2b" ;;
+  *) RUNTIME="docker" ;;
+esac
+
+# Docker is the only enforced runtime (the app forces it — see lib/config.ts).
+# E2B/microsandbox are experimental scaffolding; don't set up a runtime the app
+# will ignore. Fall back to Docker with a clear message rather than silently.
+if [ "$RUNTIME" != "docker" ]; then
+  warn "$RUNTIME is experimental and not currently wired — using Docker, the only enforced runtime."
+  RUNTIME="docker"
+fi
+
+ok "Selected $RUNTIME"
+
+# ── 3. Validate & start sandbox runtime ──────────────────
+step "Setting up $RUNTIME"
+
+if [ "$RUNTIME" = "docker" ]; then
+  if ! command -v docker &>/dev/null; then
+    warn "Docker is not installed."
+    echo ""
+    echo -e "    Install Docker Desktop:"
+    echo -e "      ${BOLD}Mac:${RESET}   ${BLUE}https://www.docker.com/products/docker-desktop/${RESET}"
+    echo -e "      ${BOLD}Linux:${RESET} ${BLUE}https://docs.docker.com/engine/install/${RESET}"
+    echo ""
+    echo -e "    Then re-run this script."
+    echo ""
+    fail "Docker not found."
+  fi
+
+  if ! docker info &>/dev/null 2>&1; then
+    warn "Docker is installed but not running."
+
+    DOCKER_STARTED=false
+
+    # Try Colima first (available on macOS and Linux)
+    if command -v colima &>/dev/null; then
+      echo -e "    Starting Colima..."
+      colima start 2>/dev/null &
+      echo -ne "    Waiting for Docker daemon"
+      for i in $(seq 1 30); do
+        if docker info &>/dev/null 2>&1; then
+          echo ""
+          ok "Docker daemon is running (via Colima)"
+          DOCKER_STARTED=true
+          break
+        fi
+        echo -n "."
+        sleep 2
+      done
+    fi
+
+    # Try Docker Desktop on macOS
+    if [ "$DOCKER_STARTED" = false ] && [ "$(uname)" = "Darwin" ] && [ -d "/Applications/Docker.app" ]; then
+      echo -e "    Starting Docker Desktop..."
+      open -a Docker
+      echo -ne "    Waiting for Docker daemon"
+      for i in $(seq 1 30); do
+        if docker info &>/dev/null 2>&1; then
+          echo ""
+          ok "Docker daemon is running (via Docker Desktop)"
+          DOCKER_STARTED=true
+          break
+        fi
+        echo -n "."
+        sleep 2
+      done
+    fi
+
+    # Try systemd on Linux
+    if [ "$DOCKER_STARTED" = false ] && [ "$(uname)" = "Linux" ] && command -v systemctl &>/dev/null; then
+      echo -e "    Starting Docker via systemctl..."
+      sudo systemctl start docker 2>/dev/null
+      sleep 2
+      if docker info &>/dev/null 2>&1; then
+        ok "Docker daemon is running (via systemctl)"
+        DOCKER_STARTED=true
+      fi
+    fi
+
+    if [ "$DOCKER_STARTED" = false ]; then
+      echo ""
+      echo -e "    Start the Docker daemon with one of:"
+      echo -e "      ${BOLD}colima start${RESET}              (Colima)"
+      if [ "$(uname)" = "Darwin" ]; then
+        echo -e "      ${BOLD}open -a Docker${RESET}            (Docker Desktop)"
+      fi
+      if [ "$(uname)" = "Linux" ]; then
+        echo -e "      ${BOLD}sudo systemctl start docker${RESET} (systemd)"
+      fi
+      echo ""
+      echo -e "    Then re-run this script."
+      echo ""
+      fail "Docker daemon not running."
+    fi
+  fi
+
+  ok "Docker daemon is running"
+
+elif [ "$RUNTIME" = "microsandbox" ]; then
+  if ! command -v msb &>/dev/null; then
+    warn "Microsandbox CLI (msb) is not installed."
+    echo ""
+    echo -e "    ${BOLD}1)${RESET} Install now ${DIM}— runs: curl -sSL https://get.microsandbox.dev | sh${RESET}"
+    echo -e "    ${BOLD}2)${RESET} I'll install it myself"
+    echo ""
+    echo -n "    Choose [1]: "
+    read -r MSB_INSTALL
+    case "${MSB_INSTALL:-1}" in
+      2)
+        echo ""
+        echo -e "    Install with:"
+        echo -e "      ${BOLD}curl -sSL https://get.microsandbox.dev | sh${RESET}"
+        echo ""
+        echo -e "    Then start the server:"
+        echo -e "      ${BOLD}msb server start --dev${RESET}"
+        echo ""
+        fail "Install microsandbox, then re-run this script."
+        ;;
+      *)
+        echo ""
+        echo -e "    Installing microsandbox..."
+        if curl -sSL https://get.microsandbox.dev | sh 2>&1 | tail -5; then
+          # Refresh PATH for the newly installed binary
+          for p in "$HOME/.local/bin" "$HOME/.msb/bin"; do
+            [[ -d "$p" ]] && [[ ":$PATH:" != *":$p:"* ]] && export PATH="$p:$PATH"
+          done
+          if command -v msb &>/dev/null; then
+            ok "Microsandbox installed"
+          else
+            fail "Installation finished but 'msb' not found in PATH. Try opening a new terminal and re-running."
+          fi
+        else
+          fail "Installation failed. Try manually: curl -sSL https://get.microsandbox.dev | sh"
+        fi
+        ;;
+    esac
+  else
+    ok "msb CLI found"
+  fi
+
+  # Check if microsandbox server is responding
+  MSB_URL="${MICROSANDBOX_URL:-http://127.0.0.1:5555}"
+
+  msb_reachable() {
+    local status
+    status=$(curl -s -o /dev/null -w "%{http_code}" --max-time 2 "${MSB_URL}" 2>/dev/null) || return 1
+    [ "$status" != "000" ]
+  }
+
+  if msb_reachable; then
+    ok "Microsandbox server is running at ${MSB_URL}"
+  else
+    warn "Microsandbox server is not running at ${MSB_URL}"
+    echo ""
+    echo -e "    ${BOLD}1)${RESET} Start now ${DIM}— runs: msb server start --dev${RESET}"
+    echo -e "    ${BOLD}2)${RESET} I'll start it myself"
+    echo ""
+    echo -n "    Choose [1]: "
+    read -r MSB_START
+    case "${MSB_START:-1}" in
+      2)
+        echo ""
+        echo -e "    Start the server in another terminal:"
+        echo -e "      ${BOLD}msb server start --dev${RESET}"
+        echo ""
+        fail "Start microsandbox, then re-run this script."
+        ;;
+      *)
+        echo -e "    Starting microsandbox server..."
+
+        # Try --detach first, fall back to backgrounding
+        if msb server start --dev --detach 2>/dev/null; then
+          ok "msb server start --dev --detach succeeded"
+        else
+          msb server start --dev &>/dev/null &
+          MSB_PID=$!
+          disown "$MSB_PID" 2>/dev/null || true
+        fi
+
+        # Wait up to 15 seconds for the server to come up
+        echo -ne "    Waiting for server"
+        for i in $(seq 1 15); do
+          if msb_reachable; then
+            echo ""
+            ok "Microsandbox server started"
+            break
+          fi
+          echo -n "."
+          sleep 1
+        done
+
+        if ! msb_reachable; then
+          echo ""
+          echo ""
+          echo -e "    ${BOLD}Could not auto-start the server.${RESET}"
+          echo -e "    Please start it manually in another terminal:"
+          echo -e "      ${BOLD}msb server start --dev${RESET}"
+          echo ""
+          fail "Microsandbox server not reachable at ${MSB_URL}"
+        fi
+        ;;
+    esac
+  fi
+
+elif [ "$RUNTIME" = "e2b" ]; then
+  E2B_KEY=""
+  if [ -f .env.local ]; then
+    E2B_KEY=$(grep "^E2B_API_KEY=" .env.local 2>/dev/null | cut -d= -f2) || true
+  fi
+  [ -z "$E2B_KEY" ] && E2B_KEY="${E2B_API_KEY:-}"
+
+  if [ -z "$E2B_KEY" ]; then
+    echo ""
+    echo -e "    E2B requires an API key."
+    echo -e "    Get one at: ${BLUE}https://e2b.dev/dashboard${RESET}"
+    echo ""
+    echo -n "    Paste your E2B API key: "
+    read -r E2B_KEY
+    if [ -z "$E2B_KEY" ]; then
+      fail "E2B_API_KEY is required for the E2B runtime."
+    fi
+    # Save to .env.local
+    if [ -f .env.local ]; then
+      # Remove existing E2B_API_KEY line if present
+      grep -v "^E2B_API_KEY=" .env.local > .env.local.tmp || true
+      mv .env.local.tmp .env.local
+      echo "E2B_API_KEY=$E2B_KEY" >> .env.local
+    else
+      echo "E2B_API_KEY=$E2B_KEY" > .env.local
+    fi
+  fi
+  ok "E2B API key configured"
+fi
+
+# ── 4. LLM Provider Credentials ──────────────────────────
+step "Checking LLM provider"
+
+HAS_LLM_CREDS=false
+
+# Check if any provider credentials exist in .env.local or environment
+if [ -f .env.local ]; then
+  grep -q "^ANTHROPIC_API_KEY=sk-" .env.local 2>/dev/null && HAS_LLM_CREDS=true
+  grep -q "^AWS_ACCESS_KEY_ID=" .env.local 2>/dev/null && HAS_LLM_CREDS=true
+  grep -q "^GOOGLE_VERTEX_PROJECT=" .env.local 2>/dev/null && HAS_LLM_CREDS=true
+  grep -q "^OPENAI_BASE_URL=" .env.local 2>/dev/null && HAS_LLM_CREDS=true
+fi
+
+# Also check env vars directly
+[ -n "${ANTHROPIC_API_KEY:-}" ] && HAS_LLM_CREDS=true
+[ -n "${AWS_ACCESS_KEY_ID:-}" ] && HAS_LLM_CREDS=true
+[ -n "${AWS_PROFILE:-}" ] && HAS_LLM_CREDS=true
+[ -n "${GOOGLE_VERTEX_PROJECT:-}" ] && HAS_LLM_CREDS=true
+[ -n "${OPENAI_BASE_URL:-}" ] && HAS_LLM_CREDS=true
+
+if $HAS_LLM_CREDS; then
+  ok "LLM credentials found"
+else
+  echo ""
+  echo -e "    Choose your ${BOLD}LLM provider${RESET}:"
+  echo ""
+  echo -e "    ${BOLD}1)${RESET} Anthropic ${DIM}— direct API key${RESET}"
+  echo -e "    ${BOLD}2)${RESET} Amazon Bedrock ${DIM}— AWS credentials${RESET}"
+  echo -e "    ${BOLD}3)${RESET} Google Vertex AI ${DIM}— GCP project${RESET}"
+  echo -e "    ${BOLD}4)${RESET} OpenAI-compatible ${DIM}— custom endpoint${RESET}"
+  echo ""
+  echo -n "    Choose provider [1]: "
+  read -r PROVIDER_CHOICE
+
+  # Ensure .env.local exists with runtime
+  if [ ! -f .env.local ]; then
+    echo "SANDBOX_RUNTIME=$RUNTIME" > .env.local
+  fi
+
+  case "$PROVIDER_CHOICE" in
+    2)
+      echo ""
+      echo -n "    AWS Access Key ID: "
+      read -r AWS_KEY_ID
+      echo -n "    AWS Secret Access Key: "
+      read -r AWS_SECRET
+      echo -n "    AWS Region [us-east-1]: "
+      read -r AWS_REG
+      AWS_REG="${AWS_REG:-us-east-1}"
+
+      if [ -z "$AWS_KEY_ID" ] || [ -z "$AWS_SECRET" ]; then
+        fail "AWS credentials are required for Bedrock."
+      fi
+
+      echo "LLM_PROVIDER=bedrock" >> .env.local
+      echo "AWS_ACCESS_KEY_ID=$AWS_KEY_ID" >> .env.local
+      echo "AWS_SECRET_ACCESS_KEY=$AWS_SECRET" >> .env.local
+      echo "AWS_REGION=$AWS_REG" >> .env.local
+      ok "Bedrock credentials saved to .env.local"
+      ;;
+    3)
+      echo ""
+      echo -n "    GCP Project ID: "
+      read -r GCP_PROJECT
+      echo -n "    GCP Location [us-east5]: "
+      read -r GCP_LOC
+      GCP_LOC="${GCP_LOC:-us-east5}"
+
+      if [ -z "$GCP_PROJECT" ]; then
+        fail "GOOGLE_VERTEX_PROJECT is required for Vertex AI."
+      fi
+
+      echo "LLM_PROVIDER=vertex" >> .env.local
+      echo "GOOGLE_VERTEX_PROJECT=$GCP_PROJECT" >> .env.local
+      echo "GOOGLE_VERTEX_LOCATION=$GCP_LOC" >> .env.local
+      ok "Vertex AI credentials saved to .env.local"
+      ;;
+    4)
+      echo ""
+      echo -n "    Base URL (e.g. http://localhost:11434/v1): "
+      read -r OAI_BASE_URL
+      echo -n "    API Key (press Enter to skip for Ollama): "
+      read -r OAI_API_KEY
+      echo -n "    Model name (e.g. llama3.3): "
+      read -r OAI_MODEL
+
+      if [ -z "$OAI_BASE_URL" ]; then
+        fail "OPENAI_BASE_URL is required for OpenAI-compatible."
+      fi
+      if [ -z "$OAI_MODEL" ]; then
+        fail "OPENAI_MODEL is required for OpenAI-compatible."
+      fi
+
+      echo "LLM_PROVIDER=openai-compatible" >> .env.local
+      echo "OPENAI_BASE_URL=$OAI_BASE_URL" >> .env.local
+      [ -n "$OAI_API_KEY" ] && echo "OPENAI_API_KEY=$OAI_API_KEY" >> .env.local
+      echo "OPENAI_MODEL=$OAI_MODEL" >> .env.local
+      ok "OpenAI-compatible credentials saved to .env.local"
+      ;;
+    *)
+      echo ""
+      echo -e "    Get an API key at: ${BLUE}https://console.anthropic.com/settings/keys${RESET}"
+      echo ""
+      API_KEY="${1:-${ANTHROPIC_API_KEY:-}}"
+      if [ -z "$API_KEY" ]; then
+        echo -n "    Paste your API key: "
+        read -r API_KEY
+        echo ""
+      fi
+      if [ -z "$API_KEY" ]; then
+        fail "No API key provided. Cannot continue."
+      fi
+      echo "ANTHROPIC_API_KEY=$API_KEY" >> .env.local
+      ok "Anthropic API key saved to .env.local"
+      ;;
+  esac
+fi
+
+# Ensure SANDBOX_RUNTIME is set in .env.local
+if ! grep -q "^SANDBOX_RUNTIME=" .env.local 2>/dev/null; then
+  if [ ! -f .env.local ]; then
+    echo "SANDBOX_RUNTIME=$RUNTIME" > .env.local
+  else
+    echo "SANDBOX_RUNTIME=$RUNTIME" >> .env.local
+  fi
+fi
+
+# ── 5. Data warehouse (optional) ─────────────────────────
+step "Data warehouse connection"
+
+HAS_WAREHOUSE=false
+if [ -f .env.local ] && grep -q "^WAREHOUSE_TYPE=" .env.local 2>/dev/null; then
+  WH_TYPE=$(grep "^WAREHOUSE_TYPE=" .env.local | cut -d= -f2)
+  ok "Saved warehouse connection: $WH_TYPE (one-click connect in the app)"
+  HAS_WAREHOUSE=true
+fi
+
+if ! $HAS_WAREHOUSE; then
+  echo ""
+  echo -e "    ${DIM}Connect to a data warehouse to query with natural language.${RESET}"
+  echo -e "    ${DIM}You can also configure this later in the app.${RESET}"
+  echo ""
+  echo -e "    ${BOLD}1)${RESET} PostgreSQL ${DIM}— also Redshift, Neon, Supabase${RESET}"
+  echo -e "    ${BOLD}2)${RESET} ClickHouse"
+  echo -e "    ${BOLD}3)${RESET} BigQuery"
+  echo -e "    ${BOLD}s)${RESET} Skip ${DIM}— connect later in the app${RESET}"
+  echo ""
+  echo -n "    Choose [s]: "
+  read -r WH_CHOICE
+
+  case "$WH_CHOICE" in
+    1)
+      echo ""
+      echo -n "    Host [localhost]: "
+      read -r WH_HOST
+      WH_HOST="${WH_HOST:-localhost}"
+      echo -n "    Port [5432]: "
+      read -r WH_PORT
+      WH_PORT="${WH_PORT:-5432}"
+      echo -n "    Database: "
+      read -r WH_DB
+      echo -n "    User [postgres]: "
+      read -r WH_USER
+      WH_USER="${WH_USER:-postgres}"
+      echo -n "    Password: "
+      read -rs WH_PASS
+      echo ""
+      echo -n "    Schema [public]: "
+      read -r WH_SCHEMA
+      WH_SCHEMA="${WH_SCHEMA:-public}"
+      echo -n "    SSL? [y/N]: "
+      read -r WH_SSL
+      WH_SSL_VAL="false"
+      case "$WH_SSL" in y|Y|yes) WH_SSL_VAL="true" ;; esac
+
+      if [ -z "$WH_DB" ]; then
+        warn "Database name is required. Skipping."
+      else
+        cat >> .env.local <<WHEOF
+WAREHOUSE_TYPE=postgresql
+WAREHOUSE_PG_HOST=$WH_HOST
+WAREHOUSE_PG_PORT=$WH_PORT
+WAREHOUSE_PG_DATABASE=$WH_DB
+WAREHOUSE_PG_USER=$WH_USER
+WAREHOUSE_PG_PASSWORD=$WH_PASS
+WAREHOUSE_PG_SCHEMA=$WH_SCHEMA
+WAREHOUSE_PG_SSL=$WH_SSL_VAL
+WHEOF
+        ok "PostgreSQL connection saved to .env.local"
+      fi
+      ;;
+    2)
+      echo ""
+      echo -n "    Host [localhost]: "
+      read -r WH_HOST
+      WH_HOST="${WH_HOST:-localhost}"
+      echo -n "    Port [8123]: "
+      read -r WH_PORT
+      WH_PORT="${WH_PORT:-8123}"
+      echo -n "    Database [default]: "
+      read -r WH_DB
+      WH_DB="${WH_DB:-default}"
+      echo -n "    User [default]: "
+      read -r WH_USER
+      WH_USER="${WH_USER:-default}"
+      echo -n "    Password: "
+      read -rs WH_PASS
+      echo ""
+      echo -n "    SSL? [y/N]: "
+      read -r WH_SSL
+      WH_SSL_VAL="false"
+      case "$WH_SSL" in y|Y|yes) WH_SSL_VAL="true" ;; esac
+
+      cat >> .env.local <<WHEOF
+WAREHOUSE_TYPE=clickhouse
+WAREHOUSE_CH_HOST=$WH_HOST
+WAREHOUSE_CH_PORT=$WH_PORT
+WAREHOUSE_CH_DATABASE=$WH_DB
+WAREHOUSE_CH_USER=$WH_USER
+WAREHOUSE_CH_PASSWORD=$WH_PASS
+WAREHOUSE_CH_SSL=$WH_SSL_VAL
+WHEOF
+      ok "ClickHouse connection saved to .env.local"
+      ;;
+    3)
+      echo ""
+      echo -n "    GCP Project ID: "
+      read -r WH_PROJECT
+      echo -n "    BigQuery Dataset: "
+      read -r WH_DATASET
+      echo -e "    ${DIM}Paste your service account JSON key (or path to .json file):${RESET}"
+      echo -n "    Credentials: "
+      read -r WH_CREDS
+
+      if [ -z "$WH_PROJECT" ] || [ -z "$WH_DATASET" ] || [ -z "$WH_CREDS" ]; then
+        warn "All fields required. Skipping."
+      else
+        cat >> .env.local <<WHEOF
+WAREHOUSE_TYPE=bigquery
+WAREHOUSE_BQ_PROJECT=$WH_PROJECT
+WAREHOUSE_BQ_DATASET=$WH_DATASET
+WAREHOUSE_BQ_CREDENTIALS_JSON=$WH_CREDS
+WHEOF
+        ok "BigQuery connection saved to .env.local"
+      fi
+      ;;
+    *)
+      ok "Skipped — connect to a warehouse any time in the app"
+      ;;
+  esac
+fi
+
+# ── 6. Local inference backend (optional) ────────────────
+step "Local inference backend"
+
+echo ""
+echo -e "    ${DIM}Local models let you run queries without cloud API keys.${RESET}"
+
+# Detect already-installed backends
+LOCAL_INSTALLED=""
+if python3 -c "import mlx_lm" 2>/dev/null || command -v mlx_lm.server &>/dev/null || command -v mlx_lm &>/dev/null; then
+  ok "MLX (mlx-lm) is installed"
+  LOCAL_INSTALLED="${LOCAL_INSTALLED}mlx "
+fi
+LLAMA_SERVER_FOUND=""
+if command -v llama-server &>/dev/null; then
+  LLAMA_SERVER_FOUND="$(command -v llama-server)"
+elif [ -x "$(pwd)/data/bin/llama-server" ]; then
+  LLAMA_SERVER_FOUND="$(pwd)/data/bin/llama-server"
+fi
+if [ -n "$LLAMA_SERVER_FOUND" ]; then
+  ok "llama.cpp (llama-server) is installed: $LLAMA_SERVER_FOUND"
+  LOCAL_INSTALLED="${LOCAL_INSTALLED}llama "
+fi
+if command -v ollama &>/dev/null; then
+  ok "Ollama is installed"
+  LOCAL_INSTALLED="${LOCAL_INSTALLED}ollama "
+fi
+
+if [ -n "$LOCAL_INSTALLED" ]; then
+  echo ""
+  echo -n "    Set up or reinstall a local inference backend? [y/N]: "
+else
+  echo -n "    Set up a local inference backend? [y/N]: "
+fi
+read -r SETUP_LOCAL
+
+case "$SETUP_LOCAL" in
+  y|Y|yes|Yes|YES)
+    setup_local_backend
+    ;;
+  *)
+    if [ -n "$LOCAL_INSTALLED" ]; then
+      ok "Keeping current setup — configure models in Settings → Local Models"
+    else
+      ok "Skipped — you can set up local models any time in Settings → Local Models"
+    fi
+    ;;
+esac
+
+# ── 7. llmfit (hardware-aware model recommendations) ─────
+step "Checking llmfit"
+
+if command -v llmfit &>/dev/null; then
+  ok "llmfit already installed ($(llmfit --version 2>/dev/null || echo 'unknown version'))"
+elif [ "$HERMETIC_HEADLESS" = "1" ]; then
+  # Never fetch-and-run a third-party install script non-interactively. A
+  # headless/CI run must not silently execute `curl https://... | sh`.
+  ok "Skipped in headless mode — model recommendations use a static list (install llmfit yourself if wanted)"
+else
+  echo ""
+  echo -e "    ${BOLD}llmfit${RESET} recommends the best local models for your hardware."
+  echo -e "    ${DIM}It detects your RAM/GPU and scores models by fit, speed, and quality.${RESET}"
+  echo -e "    ${DIM}Installing fetches from Homebrew or runs a script from https://llmfit.axjns.dev${RESET}"
+  echo ""
+  echo -e "    ${BOLD}1)${RESET} Install now"
+  echo -e "    ${BOLD}2)${RESET} Skip (default)"
+  echo ""
+  echo -n "    Choose [2]: "
+  read -r LLMFIT_CHOICE
+
+  # Opt-IN: install only on an explicit "1". A network-fetched binary must not
+  # be the Enter-key default.
+  case "${LLMFIT_CHOICE:-2}" in
+    1)
+      if command -v brew &>/dev/null; then
+        echo -e "    ${DIM}Installing via Homebrew...${RESET}"
+        if brew install llmfit 2>&1 | tail -3; then
+          ok "llmfit installed"
+        else
+          warn "Homebrew install failed, trying install script..."
+          if curl -fsSL https://llmfit.axjns.dev/install.sh | sh 2>&1 | tail -3; then
+            ok "llmfit installed"
+          else
+            warn "Could not install llmfit — model recommendations will use a static list"
+          fi
+        fi
+      else
+        echo -e "    ${DIM}Installing via install script...${RESET}"
+        if curl -fsSL https://llmfit.axjns.dev/install.sh | sh 2>&1 | tail -3; then
+          # Refresh PATH for local install
+          for p in "$HOME/.local/bin" "$HOME/.cargo/bin"; do
+            [[ -d "$p" ]] && [[ ":$PATH:" != *":$p:"* ]] && export PATH="$p:$PATH"
+          done
+          if command -v llmfit &>/dev/null; then
+            ok "llmfit installed"
+          else
+            warn "Install finished but 'llmfit' not found in PATH — try opening a new terminal"
+          fi
+        else
+          warn "Could not install llmfit — model recommendations will use a static list"
+        fi
+      fi
+      ;;
+    *)
+      ok "Skipped — model recommendations will fall back to a static list"
+      ;;
+  esac
+fi
+
+# ── 8. Install dependencies ──────────────────────────────
+step "Installing dependencies"
+
+# This is a pnpm project (package.json "packageManager": pnpm). Running `npm
+# install` here IGNORES pnpm-lock.yaml, re-resolves the whole tree from the
+# registry, and rebuilds node_modules from pnpm's symlink layout into npm's flat
+# layout — so it thrashes against pnpm and does a FULL reinstall on EVERY launch.
+# Use pnpm (via corepack, so the pinned version runs even without a global pnpm)
+# with a frozen lockfile: near-instant when node_modules already matches, and it
+# never rewrites the lockfile. Fall back to a normal install on lockfile drift.
+PNPM="pnpm"
+command -v pnpm &>/dev/null || PNPM="corepack pnpm"
+if ! $PNPM install --frozen-lockfile; then
+  warn "Frozen install failed (lockfile drift?) — running a normal pnpm install"
+  $PNPM install
+fi
+ok "Done"
+
+# ── 9. Build sandbox ─────────────────────────────────────
+if [ "$RUNTIME" = "docker" ]; then
+  step "Building Python sandbox"
+
+  echo -e "    ${DIM}(rebuilds if Dockerfile changed, cached otherwise)${RESET}"
+  docker build -t hermetic-sandbox ./docker/sandbox/ -q
+  ok "Sandbox image ready"
+elif [ "$RUNTIME" = "microsandbox" ]; then
+  step "Preparing microsandbox"
+
+  # Pull custom image if set
+  if grep -q "^MICROSANDBOX_IMAGE=" .env.local 2>/dev/null; then
+    MSB_IMG=$(grep "^MICROSANDBOX_IMAGE=" .env.local | cut -d= -f2)
+    echo -e "    ${DIM}Pulling $MSB_IMG...${RESET}"
+    msb pull "$MSB_IMG" 2>/dev/null || true
+  fi
+
+  ok "Sandbox will be warmed up after server starts"
+fi
+
+# ── 10. Claude integration (MCP) ─────────────────────────
+# Hermetic doubles as an MCP server: Claude Desktop / Claude Code drive the
+# same libraries as tools ("the analysis room for your agent" — docs/mcp.md).
+# Everything the server needs is already set up by the steps above; the
+# installer only writes client configs (with consent) + builds the viewer.
+if [ -d "$HOME/Library/Application Support/Claude" ] ||
+   [ -d "${XDG_CONFIG_HOME:-$HOME/.config}/Claude" ] ||
+   command -v claude &>/dev/null; then
+  step "Claude integration (MCP)"
+  echo -e "    ${DIM}Claude Desktop/Code detected — hermetic can register as an MCP server.${RESET}"
+  echo -en "    Set it up now? [Y/n]: "
+  read -r MCP_ANSWER
+  if [ -z "$MCP_ANSWER" ] || [[ "$MCP_ANSWER" =~ ^[Yy] ]]; then
+    # Never let MCP-installer problems break the app launch.
+    bash ./scripts/install-mcp.sh || warn "MCP setup failed — re-run later: ./scripts/install-mcp.sh"
+  else
+    ok "Skipped ${DIM}(anytime later: ./scripts/install-mcp.sh)${RESET}"
+  fi
+fi
+
+# ── 11. Launch ────────────────────────────────────────────
+step "Starting app"
+
+echo ""
+echo -e "    ${DIM}Runtime: $RUNTIME${RESET}"
+
+if [ "$RUNTIME" = "microsandbox" ]; then
+  # Start dev server in background so we can warm up the sandbox.
+  # `npm run` (not `npm install`) only EXECUTES the dev script — it never touches
+  # node_modules, so it can't reintroduce the pnpm/npm thrash. It's used here
+  # because npm strips `--` cleanly, whereas `pnpm run dev -- …` forwards the `--`
+  # into `next dev`, which then reads `-H` as the project directory and fails.
+  npm run dev -- -H 127.0.0.1 &
+  DEV_PID=$!
+
+  # Wait for server to be ready
+  echo -ne "    Waiting for server"
+  for i in $(seq 1 30); do
+    if curl -s -o /dev/null http://localhost:3000 2>/dev/null; then
+      echo ""
+      ok "Server is up"
+      break
+    fi
+    echo -n "."
+    sleep 1
+  done
+
+  # Warm up the sandbox (downloads get-pip.py, installs packages)
+  step "Installing Python packages"
+  echo -e "    ${DIM}(first time only — installs pandas, numpy, scipy, etc.)${RESET}"
+
+  WARMUP_RESULT=$(curl -s -X POST http://localhost:3000/api/runtimes/warmup 2>/dev/null || echo '{"status":"error"}')
+  if echo "$WARMUP_RESULT" | grep -q '"status":"ok"'; then
+    ok "Sandbox ready"
+  else
+    warn "Warmup failed — packages will be installed on first query"
+    echo -e "    ${DIM}$WARMUP_RESULT${RESET}"
+  fi
+
+  echo ""
+  echo -e "    ${GREEN}${BOLD}Ready!${RESET} Opening ${BLUE}http://localhost:3000${RESET}"
+  echo -e "    ${DIM}Press Ctrl+C to stop.${RESET}"
+  echo ""
+
+  # Open browser
+  (open "http://localhost:3000" 2>/dev/null || xdg-open "http://localhost:3000" 2>/dev/null || true) &
+
+  # Forward signals to the dev server and wait
+  trap "kill $DEV_PID 2>/dev/null" EXIT INT TERM
+  wait $DEV_PID
+else
+  echo -e "    ${GREEN}${BOLD}Ready!${RESET} Opening ${BLUE}http://localhost:3000${RESET}"
+  echo -e "    ${DIM}Press Ctrl+C to stop.${RESET}"
+  echo ""
+
+  # Open browser after a short delay (in background)
+  (sleep 3 && open "http://localhost:3000" 2>/dev/null || xdg-open "http://localhost:3000" 2>/dev/null || true) &
+
+  # `npm run` only executes the dev script (never installs), and npm strips `--`
+  # cleanly — `pnpm run dev -- …` forwards the `--` into `next dev`, which then
+  # treats `-H` as the project directory and fails.
+  exec npm run dev -- -H 127.0.0.1
+fi

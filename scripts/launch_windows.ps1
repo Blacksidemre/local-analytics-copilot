@@ -16,6 +16,7 @@ $env:PYTHONUTF8 = "1"
 $env:PYTHONIOENCODING = "utf-8"
 $RepoRoot = Split-Path -Parent $PSScriptRoot
 Set-Location $RepoRoot
+$DesktopRoot = Join-Path $RepoRoot "apps\desktop"
 $LogDirectory = Join-Path $RepoRoot "workspace\logs"
 New-Item -ItemType Directory -Force -Path $LogDirectory | Out-Null
 
@@ -41,6 +42,23 @@ function Test-LacBackend([string]$BaseUrl, [int]$TimeoutSeconds = 2) {
   } catch {
     return $false
   }
+}
+
+function Test-HybridFrontend([string]$BaseUrl, [int]$TimeoutSeconds = 3) {
+  try {
+    $Response = Invoke-RestMethod -Uri "$BaseUrl/api/lac/api/v1/health" -TimeoutSec $TimeoutSeconds
+    return $Response.data_bridge.status -eq "ready"
+  } catch {
+    return $false
+  }
+}
+
+function Find-Pnpm {
+  foreach ($Name in @("pnpm.cmd", "pnpm")) {
+    $Command = Get-Command $Name -ErrorAction SilentlyContinue
+    if ($Command) { return $Command.Source }
+  }
+  return $null
 }
 
 function Test-NativeCommand {
@@ -157,7 +175,51 @@ try {
   }
   Write-Host "[OK] Local Analytics Copilot hazır: $BackendUrl" -ForegroundColor Green
 
-  if (-not $NoBrowser) { Start-Process $BackendUrl }
+  $AppUrl = $BackendUrl
+  if (Test-Path (Join-Path $DesktopRoot "package.json")) {
+    $Pnpm = Find-Pnpm
+    if (-not $Pnpm) {
+      throw "Masaüstü arayüzü için pnpm bulunamadı. Node.js ve Corepack/pnpm kurulumunu tamamlayın."
+    }
+    if (-not (Test-Path (Join-Path $DesktopRoot "node_modules"))) {
+      Write-Step "Masaüstü arayüzü bağımlılıkları ilk kez hazırlanıyor..."
+      & $Pnpm --dir $DesktopRoot install --frozen-lockfile
+      if ($LASTEXITCODE -ne 0) {
+        throw "Masaüstü arayüzü bağımlılıkları kurulamadı. İnternet bağlantısını kontrol edip yeniden deneyin."
+      }
+    }
+
+    $FrontendUrl = "http://127.0.0.1:3000"
+    $env:NEXT_PUBLIC_LAC_HYBRID = "1"
+    $env:LAC_BRIDGE_URL = $BackendUrl
+    $env:HERMETIC_HOST = "127.0.0.1"
+    if (-not (Test-HybridFrontend $FrontendUrl)) {
+      Write-Step "Tek uygulama arayüzü başlatılıyor..."
+      $FrontendStdout = Join-Path $LogDirectory "frontend.stdout.log"
+      $FrontendStderr = Join-Path $LogDirectory "frontend.stderr.log"
+      Start-Process -FilePath $Pnpm `
+        -ArgumentList @("dev") `
+        -WorkingDirectory $DesktopRoot `
+        -WindowStyle Hidden `
+        -RedirectStandardOutput $FrontendStdout `
+        -RedirectStandardError $FrontendStderr | Out-Null
+      $FrontendReady = $false
+      for ($Attempt = 0; $Attempt -lt 120; $Attempt++) {
+        Start-Sleep -Milliseconds 500
+        if (Test-HybridFrontend $FrontendUrl) {
+          $FrontendReady = $true
+          break
+        }
+      }
+      if (-not $FrontendReady) {
+        throw "Tek uygulama arayüzü başlatılamadı. Ayrıntı: workspace\logs\frontend.stderr.log"
+      }
+    }
+    $AppUrl = $FrontendUrl
+    Write-Host "[OK] Tek Local Analytics Copilot arayüzü hazır: $AppUrl" -ForegroundColor Green
+  }
+
+  if (-not $NoBrowser) { Start-Process $AppUrl }
   Write-Host "Bu pencereyi kapatabilirsiniz; uygulama yerel olarak çalışmaya devam eder." -ForegroundColor DarkGray
 } catch {
   Write-Host "[HATA] $($_.Exception.Message)" -ForegroundColor Red

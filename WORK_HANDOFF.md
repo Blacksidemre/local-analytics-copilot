@@ -1,190 +1,163 @@
 # Work Handoff
 
-Updated: 2026-08-30
+Updated: 2026-08-31
+
 Branch: `hermetic-hybrid-integration`
-Baseline: `cfbc2e2` (`main` and branch were identical before hybrid work)
-Last validated revision: the current branch HEAD containing this document
 
-## Completed milestone
+Canonical repository: `Blacksidemre/local-analytics-copilot`
+Protected branches: `main` and upstream `achalp/hermetic` were not changed
 
-Milestone 1 backend/bridge and browser UI paths passed on the user's Windows machine. The native
-Tauri window remains a separate physical acceptance item because Visual C++ Build Tools/link.exe is
-not installed; no desktop E2E success is inferred from browser or CI results.
+## Current product state
 
-- Hybrid boundary frozen in `docs/HYBRID_ARCHITECTURE.md`.
-- Hermetic upstream `04e4dca` inspected; current Tauri and XLSX/sheet-picker work is BORROW.
-- LAC deterministic Data Bridge now owns CSV/XLSX/XLSM/Parquet ingestion truth.
-- CSV detection covers encoding, delimiter, quote, decimal and thousands separators.
-- Excel discovery covers sheet names and header-row detection.
-- XLSX/XLSM ZIP archives are bounded by declared uncompressed size and entry count before parsing.
-- Malformed CSV, fake/corrupt Excel, wrong signatures and unsupported types return typed errors.
-- Upload API writes in bounded chunks under `workspace/incoming` and never overwrites a source.
-- Profiles expose schema, roles, missing, unique counts, duplicates, summaries and date ranges.
-- Authoritative profile numbers have stable `finding_id` values.
-- Quick Dashboard API payload selects KPI cards only by stable `finding_id`, preserves each
-  deterministic calculation source and contains no raw rows.
-- CSV and XLSX regression fixtures now verify the same dashboard card and missing-column contract.
-- Hermetic bridge errors normalize to `{ code, message, hint, details }` for typed UI handling.
-- Quick mode can ask local Ollama to interpret a bounded profile digest without raw rows and reports
-  numeric-evidence and semantic verification separately from deterministic analytics.
-- Dataset-wide missing rate and every column-level missing percentage have separate stable finding
-  IDs; column percentages cannot be added and presented as a dataset-wide rate.
-- Duplicate-copy removal count is explicitly separated from duplicate-group rows including
-  originals. Binary columns carry no inferred target/probability/business meaning.
-- Qwen text that fails numeric binding or the duplicate/missing/binary semantic guardrails is
-  rejected and is not returned to the UI as trusted interpretation.
-- Windows double-click launcher supports `py -3.12` when the `python` alias is broken.
-- Windows native probes now allow expected non-zero results, Docker-off is a warning, and console
-  plus Python subprocess output are configured for UTF-8.
-- Hermetic adapter client and integration sequence live under `integrations/hermetic/`.
+The product source is now consolidated in one repository. The deterministic Python analytics,
+reporting and Agent services remain under `src/lacopilot`; the Hermetic-derived Next/Tauri product
+shell is preserved under `apps/desktop`. Original MIT and Apache-2.0 notices remain in place.
 
-## Milestone 2 current slice
-
-The first bounded Analyst vertical slice is implemented:
-
-- `POST /api/v1/analysis/analyst` requires an explicit target column.
-- Non-binary targets require an explicit statistical kind; column names never establish business
-  meaning.
-- Identifier, datetime and free-text fields are excluded from automatic predictor selection.
-- Binary, continuous and categorical target screens dispatch deterministic Mann-Whitney,
-  Spearman, Kruskal-Wallis, chi-square or Fisher tests as appropriate.
-- Raw p-values are adjusted together with Benjamini-Hochberg correction.
-- Effect, raw p-value, adjusted p-value and complete-case count each receive stable `finding_id`
-  evidence.
-- The Analyst verifier rejects duplicate/unknown/orphan findings, broken analysis-to-finding ID
-  chains, dimension/unit/source drift, invalid observation counts, incorrect recomputed
-  Benjamini-Hochberg values, reordered dashboard cards and invented target/KPI semantics.
-- The Hermetic bridge revalidates the Analyst contract before rendering it.
-- The hybrid UI now lets the user explicitly select a target and target kind, then displays only
-  verifier-passed effect cards and method metadata.
-- Local Qwen receives only the bounded top-card Analyst digest, never raw rows. Numeric statements
-  must cite matching Analyst findings; unsupported causal, predictive, significance, risk and
-  business-importance claims are rejected and hidden from the UI.
-- A verified Analyst Excel report is now generated from that manifest with four sheets:
-  `Executive Dashboard`, `Associations`, `Evidence`, and `Methodology`. Dashboard values are
-  direct formulas into the Evidence sheet; raw rows are never exported.
-- The backend reopens every generated report and rejects it if sheets, finding values/sources,
-  formulas, cached formula values, error cells, or external-link checks fail.
-- Hermetic exposes the report as a one-click verified `.xlsx` download through the loopback-only
-  bridge proxy.
-- Self-contained HTML and PDF reports are generated from the same verifier-passed finding
-  manifest. Both formats include the stable finding IDs and a SHA-256 evidence-manifest binding;
-  neither format exports raw source rows or loads external resources.
-- HTML verification rejects missing sections, altered values/units/sources, scripts and external
-  links. PDF verification reopens the file, checks metadata, pages, evidence text, manifest hash,
-  file links and the target/KPI guardrails.
-- Hermetic now exposes verified Excel, HTML and PDF downloads. The bridge client independently
-  checks each response's schema, verification headers, safe filename extension, counts and binary
-  file signature before the browser can download it.
-
-## Validation
+The runtime boundary is intentionally still two localhost processes inside one product:
 
 ```text
-ruff format --check .                 PASS
-ruff check .                          PASS
-python -m compileall -q src scripts   PASS
-pytest ingestion+launcher -q          20 passed, 1 skipped (pwsh absent)
-node --check lac-bridge-client.ts     PASS
-bridge client runtime smoke           PASS
-git diff --check                      PASS
-Analyst + ingestion regression        28 passed, 1 skipped (PowerShell absent)
-Hermetic Analyst bridge/UI Vitest     16 passed
-Hermetic TypeScript + ESLint          PASS
-Analyst interpretation regression     8 passed
-Hermetic interpretation bridge/UI     15 passed
-Analyst Excel report regression        11 passed
-Analyst document report regression      14 passed
-Hermetic report bridge/proxy/UI         28 passed
-Analyst workbook visual sheet pass      PASS (4 sheets)
-Analyst PDF render/reopen pass           PASS (3-page controlled fixture)
-LAC suite excluding local polars crash   77 passed, 1 skipped, 1 deselected
-Bounded Agent CSV/XLSX regression         7 passed
-LAC GitHub CI run 33336788010            PASS (Windows + Linux 3.11/3.12)
-Hermetic GitHub CI run 33336825162       PASS (bridge/UI + Node 24 + Tauri + live hybrid)
-Live hybrid CSV/XLSX contract            PASS (Quick + Analyst + verified XLSX/HTML/PDF)
+Local Analytics Copilot launcher / Tauri
+  -> trusted same-origin UI proxy
+  -> LAC Data Bridge + deterministic analytics + verifier
+  -> local Ollama planner/synthesizer (optional; never authoritative for calculations)
 ```
 
-The local workspace's native `polars` build still terminates with `Bus error`, but the branch's
-GitHub CI completed the full coverage suite successfully on Python 3.11 and 3.12. The failure is
-therefore isolated to this transient Linux runtime rather than the committed project state.
+The old `Blacksidemre/hermetic` integration branch is a historical/reference source after this
+consolidation; end users no longer need to clone it.
 
-Regression fixture contract, tested for CSV and XLSX:
+## Milestone status
+
+- Milestone 1 — deterministic CSV/XLSX Quick path: **PASS for browser path**. The user's prior
+  physical Windows tests confirmed `1508 x 22`, 52 missing cells and 8 exact duplicate copies.
+- Milestone 2 — deterministic Analyst, verifier and Excel/HTML/PDF reports: **PASS for browser
+  path**. The user's prior physical Windows test confirmed Analyst verification and report output.
+- Milestone 3 — bounded local Agent: **PARTIAL**. Planner/runtime, Agent API/UI, adversarial suite,
+  verified synthesis and local history foundation are implemented. A live local-Ollama Agent run
+  and packaged Windows Tauri E2E are still required before PASS.
+
+## Bounded Agent capabilities
+
+`POST /api/v1/analysis/agent` implements:
+
+- local Ollama JSON-schema planner with a maximum of six steps;
+- allowlisted typed tools only: dataset profile, target association screen, numeric description,
+  category frequency, segment aggregation, time trend and outlier screening;
+- duplicate-call/loop guard, dependency checks, failure budget and goal completion;
+- independent deterministic tool/run verification and stable `finding_id` evidence;
+- bounded tool-less synthesis from verified evidence only;
+- no arbitrary Python, shell, PowerShell, SQL, filesystem traversal, internet or raw-row dump;
+- fail-closed behavior for fake evidence, unsupported numeric claims, causality, prediction,
+  unapproved business/KPI meaning and prompt injection in dataset values;
+- deterministic Quick Dashboard fallback when Ollama/planner is unavailable.
+
+The Agent UI shows the active dataset, optional explicit target semantics, plan steps, progress,
+verified evidence, verifier result, safe synthesis and recoverable local-model errors.
+
+## Local model management
+
+Bridge health reports installed Ollama models, the configured default and whether it is present.
+The UI offers an installed-model selector and passes the selection through Quick, Analyst, Agent
+and report requests. If no model is available, deterministic Quick/Analyst calculations remain
+usable; unverified model prose is never presented as trusted output.
+
+## Memory and history foundation
+
+Verified Agent runs can be stored in local `workspace/analysis_history.sqlite3` and can be listed,
+opened or deleted through typed API routes. Storage keeps only the dataset-local fingerprint,
+request summary, used tool names and a maximum of 48 verifier-passed findings. It does not retain
+raw rows, model prompts, tool arguments or secrets, and archived findings are not automatically
+promoted to evidence for a later run.
+
+Company rules still follow the existing candidate -> explicit human approval -> approved memory
+flow. Full cross-session conversational/project-history UX and period comparison remain future
+work; the current storage layer is deliberately a safe foundation rather than autonomous memory.
+
+## Canonical launcher and desktop packaging
+
+- Root `pnpm dev` starts and supervises the backend plus unified web UI.
+- Root `pnpm desktop:dev` starts the backend and Tauri development shell.
+- Commands use relative paths, loopback-only ports, service-identity probes and bounded waits.
+- The launcher refuses unrelated services on required ports, reuses healthy existing services and
+  kills only child processes it started.
+- `Start_Local_Analytics_Copilot.cmd` / `scripts/launch_windows.ps1` start the unified browser UI
+  and preserve the previously verified Windows UTF-8, Ollama and Docker-off behavior.
+- Release Tauri code allocates ephemeral loopback ports, generates a per-run API token, stores
+  workspace/config/logs under the application data directory and ties backend/UI children to the
+  app lifecycle.
+- The deterministic backend has a PyInstaller one-directory build path and is bundled as a Tauri
+  resource. Windows CI builds and smoke-tests that executable.
+- Native build prerequisites are checked with an actionable Visual C++/Windows SDK message.
+
+## License and attribution
+
+- LAC root license: MIT.
+- Hermetic-derived source: `apps/desktop/LICENSE` (MIT, original copyright retained).
+- Vendored json-render: `apps/desktop/src/spec/LICENSE` and `NOTICE.md` (Apache-2.0).
+- Consolidated notice index: `THIRD-PARTY-NOTICES.md`.
+
+## Latest local validation
 
 ```text
-rows                              1508
-columns                             22
-monthly_income_try missing          24
-payment_ratio_3m missing             12
-employment_years missing             16
-total missing cells                  52
-exact duplicate copies                8
-duplicate rows including originals   16
+Python suite excluding the known local Polars and DuckDB binary crashes:
+  118 passed, 1 skipped (PowerShell absent), 2 deselected
+
+Agent/history/API targeted tests:
+  PASS
+
+Canonical launcher + packaging contract:
+  7 passed
+
+Desktop formatting:
+  PASS
+
+Desktop ESLint:
+  PASS with 47 inherited warnings, 0 errors
+
+Desktop TypeScript:
+  PASS
+
+Desktop bridge/UI/proxy/launcher Vitest:
+  43 passed
+
+git diff --check:
+  PASS
 ```
 
-## Main files changed
+The transient Linux environment's installed `polars` and `duckdb` native modules terminate with a
+CPU `Bus error` in their two execution tests. The remainder of the suite passes when those two
+known tests are deselected; GitHub Linux/Windows jobs run the complete suite on clean runners.
 
-- `src/lacopilot/ingestion.py`
-- `src/lacopilot/dataset_uploads.py`
-- `src/lacopilot/quick_analysis.py`
-- `src/lacopilot/analyst_pipeline.py`
-- `src/lacopilot/analyst_interpretation.py`
-- `src/lacopilot/analyst_report.py`
-- `src/lacopilot/analyst_document_reports.py`
-- `src/lacopilot/investigate_foundation.py`
-- `src/lacopilot/regression_fixture.py`
-- `src/lacopilot/app.py`
-- `src/lacopilot/tools/common.py`
-- `src/lacopilot/tools/data_tools.py`
-- `tests/test_ingestion_bridge.py`
-- `tests/test_analyst_pipeline.py`
-- `tests/test_investigate_foundation.py`
-- `scripts/launch_windows.ps1`
-- `Start_Local_Analytics_Copilot.cmd`
-- `integrations/hermetic/lac-bridge-client.ts`
+The local Next production build cannot be used as a release signal in this workspace because
+`apps/desktop/node_modules` is an ignored symlink to the separately checked-out Hermetic dependency
+tree; Turbopack correctly rejects a symlink outside the project filesystem root. The canonical CI
+performs a fresh in-tree `pnpm install` and production build.
 
-## Known limits / blockers
+Rust/Cargo and PyInstaller are not installed in this Linux workspace. Windows CI therefore owns
+the Rust `cargo check --locked`, packaged-backend build and executable health smoke. This is not a
+claim that the final installed Tauri application passed on the user's physical Windows machine.
 
-- The LAC PowerShell launcher, UTF-8 output, Docker-off warning and health checks passed on the
-  user's Windows machine. PowerShell is unavailable in this Linux workspace, so later launcher
-  changes still rely on Windows CI plus the recorded physical result.
-- Hermetic upload/Quick UI is wired on `Blacksidemre/hermetic: lac-data-bridge-integration`.
-- Hermetic local Investigate remains disabled upstream. Do not remove its provider gate until the
-  bounded local planner/verifier design in Milestone 3 is implemented and evaluated.
-- Live Qwen, Analyst, verifier and report generation passed on the user's Windows browser path.
-  Tauri-on-Windows remains blocked only by the missing Visual C++ Build Tools/link.exe prerequisite.
-- GitHub's Windows runner verifies the LAC Python suite, Hermetic's Node 24 ESM launcher and that
-  the Tauri Rust shell compiles. It is not evidence that the full desktop, local Ollama and Docker
-  Desktop path passed interactively on the user's actual machine.
-- A live contract checks both integration branches and validates controlled CSV/XLSX upload,
-  Quick Dashboard evidence, Analyst verification and verified Excel/HTML/PDF downloads.
-- TestClient emits one upstream Starlette/httpx deprecation warning; tests still pass.
-- The complete upstream Hermetic test/build chain was stopped in this workspace when an existing
-  test attempted to contact a cloud instance-metadata endpoint. No retry or bypass was attempted;
-  the changed bridge/proxy/UI files passed their 28 targeted tests, formatting, ESLint and
-  TypeScript checks without that access.
+## Remaining release blockers
 
-## Next milestone action
+1. GitHub Actions for the consolidation commit must be green.
+2. Run one real local-Ollama Agent request on controlled CSV and XLSX and confirm verified output.
+3. Install Visual Studio Build Tools (`Desktop development with C++`, MSVC and Windows SDK) and
+   complete the physical `pnpm desktop:dev` Tauri acceptance.
+4. Build and test the Windows installer/package on the physical target machine.
+5. Add Agent-native report export and fuller history/project comparison UX before stable v1.0 if
+   they are considered release requirements rather than post-v1 scope.
 
-Milestone 2's deterministic Analyst/browser contract is frozen. A non-routable Milestone 3
-foundation now defines strict local-planner schemas, user-approved target semantics, two
-allowlisted deterministic tools, six-step/two-failure budgets, dependency and duplicate-call
-guards, goal completion, independent profile/Analyst/run verification, no-raw-row evidence and a
-48-finding tool-less synthesis reserve. CSV and XLSX execute the same bounded contract.
+## Minimum later Windows acceptance
 
-Next, connect local Ollama only through this parser and build adversarial planner/synthesis evals.
-Keep Agent UI/API disabled until those evals pass; keep company KPI selection blocked until an
-approved definition is supplied and never enable arbitrary Python/shell execution.
+From only the canonical LAC repository:
 
-## Acceptance still required on Windows
-
-```text
-install Visual Studio Desktop development with C++ + Windows SDK
-→ pnpm desktop:dev
-→ Hermetic/Tauri native window opens
-→ CSV and XLSX upload
-→ correct 1508 x 22 profile
-→ 52 missing cells / 8 duplicate copies
-→ one Analyst run and verified report download
+```powershell
+git switch hermetic-hybrid-integration
+git pull
+pnpm desktop:install
+pnpm desktop:dev
 ```
 
-`main` must remain untouched until this full path passes.
+Then upload the controlled CSV and XLSX fixture, run one natural-language Agent request, confirm
+the verifier passes, and download one report. No second repository or second terminal is required.
+
+Do not merge to `main` or publish a stable release until this physical native path passes.

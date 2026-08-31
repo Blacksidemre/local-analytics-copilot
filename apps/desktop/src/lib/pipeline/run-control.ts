@@ -1,0 +1,256 @@
+import { getRunId } from "@/lib/run-context";
+// Container kill/reap mechanics live in the sandbox layer (a DOWNWARD import;
+// the submodule directly, so the stop endpoint's graph doesn't drag in the
+// executors). This module keeps only the registry logic.
+import { killContainer, reapOrphanContainers } from "@/lib/sandbox/lifecycle";
+import { logger } from "@/lib/logger";
+import type { SkillFailureHint } from "@/lib/skills/types";
+import { stateNamespace } from "@/lib/state-store";
+import { registerRunLivenessProbe } from "@/lib/store-ttl";
+import { getHandoffRegistry } from "@/lib/sandbox/wasm/handoff-singleton";
+import { createStreamWasmExecutor, type WasmExecuteRequest } from "@/lib/sandbox/wasm/handoff";
+import type { WasmExecutor } from "@/lib/sandbox";
+
+/**
+ * Per-run control registry — the single mechanism behind "stop on demand" and
+ * "never kill a run ourselves", uniform across Ask and Investigate and every
+ * source.
+ *
+ * Each streaming run registers ONE AbortController keyed by its runId. Every
+ * long-running thing the run spawns subscribes to that signal: sandbox execs
+ * (which also register their container id here so a stop can `docker rm -f`
+ * them), LLM streams (via the AI SDK's abortSignal), warehouse polling. The
+ * stop endpoint — a SEPARATE request, so it can't reach the run's
+ * AsyncLocalStorage — looks the run up by id in this module-level map and
+ * aborts it.
+ *
+ * There is deliberately NO timeout here. A connected, progressing analysis runs
+ * until it finishes or the user stops it. Orphan cleanup (crash / restart) is
+ * the store-sweeper's job: it reaps sandbox containers that are NOT registered
+ * as active here (this map is the source of truth for "alive").
+ *
+ * Single-process model (one server = one map), same as the other globalThis
+ * stores.
+ */
+
+import type { SandboxProgress, SandboxRunHooks } from "@/lib/contracts/execution";
+export type { SandboxProgress };
+
+interface RunControl {
+  controller: AbortController;
+  /** Live sandbox container ids for this run (Investigate has several). */
+  containers: Set<string>;
+  /** Forwards sandbox progress to the run's patch stream. */
+  onProgress?: (p: SandboxProgress) => void;
+  /** Dispatches a WASM execute-request into the run's patch stream (webview handoff). */
+  onWasmExecute?: (req: WasmExecuteRequest) => void;
+  /** Active skills' phase-keyed OOM remedies (see skills/types.ts). */
+  failureHints?: SkillFailureHint[];
+  startedAt: number;
+  stopped: boolean;
+}
+
+const runs = stateNamespace<RunControl>("run-control");
+
+// Provide the store-ttl active-run pin (M2-C4). The import points DOWNWARD
+// (orchestration -> lib util) — the old coupling was store-ttl importing this
+// registry, dragging it into every session store.
+registerRunLivenessProbe(isRunActive);
+
+/** Every sandbox container id ever registered → the runId that owns it. Lets the
+ *  sweeper tell a live container from a crash orphan without scanning each run.
+ *  MUST live on globalThis like `runs`: the sweeper is started from
+ *  instrumentation.ts and API routes compile into separate dev module graphs, so
+ *  a module-level Map here splits — the route registers containers in one
+ *  instance while the sweeper reads another (empty) one and reaps every LIVE
+ *  container on its tick as an "orphan" (observed: 11 mid-scan kills across
+ *  three runs, all exactly on the 30-min sweep tick, misdiagnosed as OOM). */
+const containerOwner = stateNamespace<string>("run-container-owner");
+
+/**
+ * Register the current run. Returns the AbortController whose signal all of the
+ * run's long-running work should honor. Idempotent per runId.
+ */
+export function registerRun(
+  runId: string,
+  onProgress?: (p: SandboxProgress) => void,
+  onWasmExecute?: (req: WasmExecuteRequest) => void
+): AbortController {
+  const existing = runs.get(runId);
+  if (existing) {
+    existing.onProgress = onProgress ?? existing.onProgress;
+    existing.onWasmExecute = onWasmExecute ?? existing.onWasmExecute;
+    return existing.controller;
+  }
+  const controller = new AbortController();
+  runs.set(runId, {
+    controller,
+    containers: new Set(),
+    onProgress,
+    onWasmExecute,
+    startedAt: Date.now(),
+    stopped: false,
+  });
+  return controller;
+}
+
+/** The current run's abort signal (from AsyncLocalStorage), or undefined. */
+export function getRunSignal(): AbortSignal | undefined {
+  const runId = getRunId();
+  return runId ? runs.get(runId)?.controller.signal : undefined;
+}
+
+/** True if the current run has been asked to stop. */
+export function isRunStopped(): boolean {
+  const runId = getRunId();
+  return runId ? (runs.get(runId)?.stopped ?? false) : false;
+}
+
+/**
+ * True while `runId` is still registered (between registerRun and endRun) — i.e.
+ * an analysis is in-flight. Used to pin resources (e.g. a run's uploaded CSV) so
+ * they are never swept out from under a legitimately long run.
+ */
+export function isRunActive(runId: string): boolean {
+  return runs.has(runId);
+}
+
+/** Register a sandbox container against the CURRENT run (so a stop can kill it). */
+export function registerContainer(containerId: string): void {
+  const runId = getRunId();
+  if (!runId) return;
+  runs.get(runId)?.containers.add(containerId);
+  containerOwner.set(containerId, runId);
+}
+
+export function unregisterContainer(containerId: string): void {
+  const runId = getRunId();
+  if (runId) runs.get(runId)?.containers.delete(containerId);
+  containerOwner.delete(containerId);
+}
+
+/**
+ * Attach the active skills' failure hints to the current run so the sandbox
+ * output parser (which has no other channel to the skill activation) can match
+ * them against the failing phase. Lives on RunControl — the globalThis-backed
+ * registry — and is torn down with the run by endRun. No-op outside a run
+ * context (tests, fingerprint containers).
+ */
+export function setRunFailureHints(hints: SkillFailureHint[]): void {
+  const runId = getRunId();
+  if (!runId) return;
+  const rc = runs.get(runId);
+  if (rc) rc.failureHints = hints;
+}
+
+/** The current run's skill failure hints ([] outside a run / none registered). */
+export function getRunFailureHints(): SkillFailureHint[] {
+  const runId = getRunId();
+  return (runId && runs.get(runId)?.failureHints) || [];
+}
+
+/** Emit a progress event from the current run's sandbox into its patch stream. */
+export function reportProgress(p: SandboxProgress): void {
+  const runId = getRunId();
+  if (!runId) return;
+  try {
+    runs.get(runId)?.onProgress?.(p);
+  } catch {
+    // Progress is best-effort — never let it break execution.
+  }
+}
+
+/**
+ * Stop a run by id (from the stop endpoint): flip its stopped flag, abort its
+ * signal (so LLM streams / warehouse polling unwind), and force-remove every
+ * container it registered (which kills the in-container process — killing the
+ * `docker exec` client alone would not). Returns false if the run is unknown
+ * (already finished).
+ */
+export async function stopRun(runId: string): Promise<boolean> {
+  const rc = runs.get(runId);
+  if (!rc) return false;
+  rc.stopped = true;
+  rc.controller.abort();
+  const ids = [...rc.containers];
+  logger.info("Run stop requested", { runId, containers: ids.length });
+  await Promise.all(ids.map((id) => killContainer(id)));
+  return true;
+}
+
+/** Whether a sandbox container is registered to a live run (sweeper guard). */
+export function isSandboxContainerActive(containerId: string): boolean {
+  return containerOwner.has(containerId);
+}
+
+/** All sandbox container ids currently owned by a live run. */
+export function activeSandboxContainerIds(): Set<string> {
+  return new Set(containerOwner.keys());
+}
+
+/**
+ * Reap orphaned analysis containers — a straggler whose run died without its
+ * finally (a crash, or a server restart that emptied this registry). This
+ * module contributes what only IT knows — which containers belong to live
+ * runs — and the sandbox layer does the docker work (listing, min-age spare,
+ * removal: see sandbox/lifecycle.ts reapOrphanContainers). Safe against the
+ * create→register window: registerContainer runs synchronously right after
+ * `docker run` resolves, with no await between, so a container that exists is
+ * either registered or a true orphan. Called by the store sweeper.
+ */
+export function reapOrphanSandboxContainers(): Promise<number> {
+  return reapOrphanContainers(activeSandboxContainerIds());
+}
+
+/** Tear down a run's registry entry once its stream concludes. */
+export function endRun(runId: string): void {
+  const rc = runs.get(runId);
+  if (rc) for (const id of rc.containers) containerOwner.delete(id);
+  runs.delete(runId);
+}
+
+/**
+ * The orchestration layer's standard SandboxRunHooks (modularization M4-4c):
+ * this registry's ambient lookups, packaged as the injected capabilities the
+ * executors take. Executors never import this module — callers inside
+ * pipeline/ build hooks here and pass them down.
+ */
+export function ambientSandboxHooks(): SandboxRunHooks {
+  return {
+    signal: getRunSignal(),
+    onProgress: reportProgress,
+    onContainerStart: registerContainer,
+    onContainerEnd: unregisterContainer,
+    failureHints: getRunFailureHints,
+  };
+}
+
+/**
+ * Dispatch a WASM execute-request into the current run's patch stream. Throws if
+ * there is no active run or the run registered no webview dispatcher (a headless
+ * or non-streaming caller) — the stream executor catches it and returns a clean
+ * failure rather than silently hanging on a handoff nobody will answer.
+ */
+function dispatchWasmExecute(req: WasmExecuteRequest): void {
+  const runId = getRunId();
+  const rc = runId ? runs.get(runId) : undefined;
+  if (!rc?.onWasmExecute) {
+    throw new Error(
+      "No live webview stream to run the WASM sandbox in (the desktop app must be connected)."
+    );
+  }
+  rc.onWasmExecute(req);
+}
+
+/**
+ * The orchestration layer's WASM executor: routes a run's code to the webview
+ * worker over the open patch stream (dispatchWasmExecute) and awaits the browser's
+ * POSTed result via the shared handoff registry. Passed to executeSandbox as
+ * `wasmExecutor`; only invoked when the active runtime is "wasm".
+ */
+export function ambientWasmExecutor(): WasmExecutor {
+  return createStreamWasmExecutor({
+    registry: getHandoffRegistry(),
+    emit: dispatchWasmExecute,
+  });
+}

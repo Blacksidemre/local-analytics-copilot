@@ -12,6 +12,7 @@ from pydantic import BaseModel, Field
 
 from lacopilot import __version__
 from lacopilot.actions import ActionStore
+from lacopilot.analysis_history import AnalysisHistoryStore
 from lacopilot.analyst_document_reports import (
     create_analyst_html_report,
     create_analyst_pdf_report,
@@ -123,6 +124,7 @@ class AgentAnalysisRequest(DatasetProfileRequest):
     predictor_columns: list[str] | None = Field(default=None, max_length=20)
     language: Literal["tr", "en"] = "tr"
     model: str | None = Field(default=None, max_length=200)
+    save_history: bool = True
 
 
 class KnowledgeIngestRequest(BaseModel):
@@ -157,6 +159,10 @@ def _store() -> ConversationStore:
     return ConversationStore(get_settings().conversations_db)
 
 
+def _analysis_history() -> AnalysisHistoryStore:
+    return AnalysisHistoryStore(get_settings().analysis_history_db)
+
+
 @app.get("/health")
 def health():
     return {
@@ -173,7 +179,12 @@ def bridge_health():
     import urllib.request
 
     settings = get_settings()
-    ollama = {"status": "unavailable", "models": []}
+    ollama = {
+        "status": "unavailable",
+        "models": [],
+        "configured_model": settings.model,
+        "configured_model_available": False,
+    }
     try:
         host = validate_ollama_endpoint(
             settings.ollama_host,
@@ -181,9 +192,16 @@ def bridge_health():
         )
         with urllib.request.urlopen(host + "/api/tags", timeout=2) as r:
             payload = json.load(r)
+        models = [
+            item.get("name") or item.get("model")
+            for item in payload.get("models", [])
+            if item.get("name") or item.get("model")
+        ]
         ollama = {
             "status": "ready",
-            "models": [item.get("name") or item.get("model") for item in payload.get("models", [])],
+            "models": models,
+            "configured_model": settings.model,
+            "configured_model_available": settings.model in models,
         }
     except Exception as exc:
         ollama["reason"] = str(exc)[:300]
@@ -319,6 +337,8 @@ async def dataset_upload(
     run_profile: bool = Form(default=True),
     interpret: bool = Form(default=False),
     question: str = Form(default=""),
+    language: str = Form(default="tr"),
+    model: str | None = Form(default=None),
 ):
     try:
         destination, manifest = await save_uploaded_dataset(file)
@@ -347,7 +367,12 @@ async def dataset_upload(
         response["profile"] = profile
         response["dashboard"] = build_quick_dashboard(profile)
         if interpret:
-            response["interpretation"] = interpret_profile(profile, question=question)
+            response["interpretation"] = interpret_profile(
+                profile,
+                question=question,
+                language=language,
+                model=model,
+            )
     return response
 
 
@@ -447,6 +472,25 @@ def agent_analysis(req: AgentAnalysisRequest):
         language=req.language,
         model=req.model,
     )
+    history = {"status": "disabled"}
+    if req.save_history:
+        try:
+            settings = get_settings()
+            source_path = resolve_workspace_path(settings.workspace, req.file_path)
+            history_id = _analysis_history().record_verified_agent_run(
+                dataset_ref=req.file_path,
+                source_path=source_path,
+                sheet_name=req.sheet_name,
+                question=req.question,
+                agent=agent,
+            )
+            history = (
+                {"status": "saved", "run_id": history_id}
+                if history_id is not None
+                else {"status": "not_saved", "reason": "run_not_verified"}
+            )
+        except (OSError, ValueError):
+            history = {"status": "not_saved", "reason": "storage_error"}
     return {
         "schema_version": "agent-api.v1",
         "status": agent["status"],
@@ -463,7 +507,42 @@ def agent_analysis(req: AgentAnalysisRequest):
         },
         "dashboard": build_quick_dashboard(profile),
         "agent": agent,
+        "history": history,
     }
+
+
+@app.get("/api/v1/analysis/history")
+def analysis_history(limit: int = 50, dataset_id: str | None = None):
+    if not 1 <= limit <= 100:
+        raise HTTPException(
+            status_code=422,
+            detail={"code": "invalid_history_limit", "message": "limit 1-100 olmalıdır."},
+        )
+    return {
+        "schema_version": "analysis-history-list.v1",
+        "runs": _analysis_history().list_runs(limit=limit, dataset_id=dataset_id),
+    }
+
+
+@app.get("/api/v1/analysis/history/{run_id}")
+def analysis_history_run(run_id: str):
+    run = _analysis_history().get_run(run_id)
+    if run is None:
+        raise HTTPException(
+            status_code=404,
+            detail={"code": "history_run_not_found", "message": "Analiz kaydı bulunamadı."},
+        )
+    return {"schema_version": "analysis-history.v1", "run": run}
+
+
+@app.delete("/api/v1/analysis/history/{run_id}")
+def delete_analysis_history_run(run_id: str):
+    if not _analysis_history().delete_run(run_id):
+        raise HTTPException(
+            status_code=404,
+            detail={"code": "history_run_not_found", "message": "Analiz kaydı bulunamadı."},
+        )
+    return {"status": "deleted", "run_id": run_id}
 
 
 def _verified_analyst_report_response(

@@ -1,0 +1,195 @@
+/**
+ * Executed-Python prelude tests. prelude.test.ts only regex-pins that the
+ * pythonNanPrelude() *contains* the expected defs — nothing ever RAN the
+ * Python, so a runtime bug (bad escaping, a syntax error, broken NaN
+ * coercion) would reach production only at user query time.
+ *
+ * These pipe PRELUDE + a fixture through the host python3 and assert the
+ * emitted output.json. Scope: the write_output envelope contract (NaN/Inf
+ * coercion, non-JSON types, the 5000-row dataset cap + _main_total) — pure
+ * Python, no pandas required. Skipped when python3 is unavailable.
+ */
+import { describe, it, expect } from "vitest";
+import { execFileSync, spawnSync } from "node:child_process";
+import { mkdtempSync, readFileSync, writeFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { pythonNanPrelude } from "@/lib/sandbox/prelude";
+import { parseJsonWithPythonNonFinite } from "@/lib/sandbox/parse-output";
+
+const havePython = (() => {
+  try {
+    execFileSync("python3", ["--version"], { stdio: "ignore" });
+    return true;
+  } catch {
+    return false;
+  }
+})();
+
+/** Run PRELUDE + fixture in python3; return the raw output.json text. */
+function runPreludeRaw(fixture: string): string {
+  const dir = mkdtempSync(join(tmpdir(), "prelude-test-"));
+  try {
+    const outPath = join(dir, "output.json");
+    // The prelude writes the hardcoded '/data/output.json'; a module-global
+    // `open` shim reroutes it (write_output resolves `open` at call time).
+    const shim =
+      `import builtins as _b\n` +
+      `def open(path, *a, **kw):\n` +
+      `    return _b.open(${JSON.stringify(outPath)} if path == '/data/output.json' else path, *a, **kw)\n`;
+    const script = pythonNanPrelude() + "\n" + shim + "\n" + fixture;
+    const scriptPath = join(dir, "script.py");
+    writeFileSync(scriptPath, script);
+    const proc = spawnSync("python3", [scriptPath], { encoding: "utf-8" });
+    if (proc.status !== 0) {
+      throw new Error(`python3 failed (${proc.status}): ${proc.stderr}`);
+    }
+    return readFileSync(outPath, "utf-8");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+/** Run and strict-parse — write_output's contract is strict JSON output. */
+function runPrelude(fixture: string): Record<string, unknown> {
+  return JSON.parse(runPreludeRaw(fixture));
+}
+
+/** Run PRELUDE + fixture in python3; return the captured STDOUT (progress
+ *  stream), not output.json. */
+function runPreludeStdout(fixture: string): string {
+  const dir = mkdtempSync(join(tmpdir(), "prelude-stdout-"));
+  try {
+    const scriptPath = join(dir, "script.py");
+    writeFileSync(scriptPath, pythonNanPrelude() + "\n" + fixture);
+    const proc = spawnSync("python3", [scriptPath], { encoding: "utf-8" });
+    if (proc.status !== 0) throw new Error(`python3 failed (${proc.status}): ${proc.stderr}`);
+    return proc.stdout;
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+describe.skipIf(!havePython)("pythonNanPrelude() — executed", () => {
+  it("the prelude itself is valid Python (no template-escaping breakage)", () => {
+    const out = runPrelude(`write_output(results={'ok': 1})`);
+    expect(out.results).toEqual({ ok: 1 });
+  });
+
+  it("progress() emits REAL newline-delimited __progress JSONL (finding 02)", () => {
+    // The prelude built the JSONL with a LITERAL two-char backslash-n instead
+    // of a newline (a TS-template extraction artifact), so every progress
+    // object landed on ONE physical line joined by `\n` text — stdout splitting
+    // could never separate them. Assert real newlines: multiple parseable lines.
+    const stdout = runPreludeStdout(
+      `progress("phase-one", "detail A")\nprogress("phase-two", "detail B")`
+    );
+    const progressLines = stdout
+      .split("\n")
+      .filter((l) => l.includes("__progress"))
+      .map((l) => JSON.parse(l) as { __progress?: { phase?: string } });
+    // At least the two explicit calls above land on their own physical lines.
+    expect(progressLines.length).toBeGreaterThanOrEqual(2);
+    expect(progressLines.every((p) => typeof p.__progress?.phase === "string")).toBe(true);
+    // The literal-\n regression would have left a backslash-n sequence inside a
+    // single physical progress line.
+    expect(stdout).not.toMatch(/}\\n\{/);
+  });
+
+  it("write_output coerces NaN/Inf to null so the output is strict JSON", () => {
+    const out = runPrelude(
+      `write_output(results={'mean': float('nan'), 'max': float('inf'), 'min': float('-inf'), 'n': 3})`
+    );
+    // JSON.parse succeeding already proves allow_nan=False held.
+    expect(out.results).toEqual({ mean: null, max: null, min: null, n: 3 });
+  });
+
+  it("write_output coerces non-JSON types (sets, tuples, unknown objects)", () => {
+    const out = runPrelude(
+      `write_output(results={'tags': {'a'}, 'pair': (1, 2)}, chart_data={'main': [(1, 2)]})`
+    );
+    const results = out.results as Record<string, unknown>;
+    expect(results.tags).toEqual(["a"]);
+    expect(results.pair).toEqual([1, 2]);
+  });
+
+  it("always writes every top-level key, even for a bare call", () => {
+    const out = runPrelude(`write_output()`);
+    // findings joined the envelope with the declared-findings feature
+    // (spec §2.1); series/values with the analysis product (spec §1) —
+    // empty arrays for a run that declared nothing.
+    expect(Object.keys(out).sort()).toEqual([
+      "chart_data",
+      "data_completeness",
+      "datasets",
+      "findings",
+      "images",
+      "regimes",
+      "results",
+      "runtime_fallback",
+      "series",
+      "values",
+    ]);
+    expect(out.findings).toEqual([]);
+    expect(out.series).toEqual([]);
+    expect(out.values).toEqual([]);
+  });
+
+  it("registry getters resolve — a read-back never NameErrors (max-effort retry class)", () => {
+    // Observed: generated code called get_findings(); the name existed only
+    // in the package, so the preflight F821 forced a full codegen retry.
+    const out = runPrelude(
+      `declare_finding('t', {'slope': 1.0}, 'trend of v', 'trend')
+declare_series('s', [{'x': 1, 'v': 2.0}], x=('x', 'ordinal'), measures=['v'])
+declare_value('n', 5, label='Rows')
+write_output(results={'n_findings': len(get_findings()),
+                      'n_series': len(get_series()),
+                      'n_values': len(get_values())})`
+    );
+    const results = out.results as Record<string, unknown>;
+    expect(results.n_findings).toBe(1);
+    expect(results.n_series).toBe(1);
+    expect(results.n_values).toBe(1);
+  });
+
+  it("synthesizes chart_data and results from declared series/values", () => {
+    const out = runPrelude(
+      `declare_series('s', [{'yr': 2000, 'v': 1.5}], x=('yr', 'temporal'), measures=['v'])
+declare_value('total', 42, label='Total rows')
+declare_finding('t', {'slope': 0.4}, 'trend of v over yr', 'trend')
+write_output()`
+    );
+    expect(out.chart_data).toEqual({ s: [{ yr: 2000, v: 1.5 }] });
+    const results = out.results as Record<string, unknown>;
+    expect(results.total).toBe(42);
+    // Scalar finding fields auto-mirror into results (spec §1).
+    expect(results.t_slope).toBe(0.4);
+    expect((out.series as unknown[]).length).toBe(1);
+  });
+
+  it("caps datasets['main'] at 5000 rows and records the true total in _main_total", () => {
+    const out = runPrelude(
+      `write_output(results={}, datasets={'main': [{'i': i} for i in range(6001)]})`
+    );
+    const datasets = out.datasets as Record<string, unknown[]>;
+    expect(datasets.main).toHaveLength(5000);
+    expect((out.results as Record<string, unknown>)._main_total).toBe(6001);
+  });
+
+  it("a write_output bypass emits bare NaN — which the Node-side parser then handles", () => {
+    // The prelude patches json.dump to allow_nan=True (preventing the Python
+    // CRASH), so a script that bypasses write_output emits BARE NaN tokens —
+    // invalid strict JSON. The other half of the contract lives Node-side:
+    // parseJsonWithPythonNonFinite falls back to token→null on parse failure.
+    // This pins the two halves TOGETHER.
+    const raw = runPreludeRaw(
+      `import json\n` +
+        `with open('/data/output.json', 'w') as f:\n` +
+        `    json.dump({'results': {'v': float('nan')}, 'chart_data': {}}, f)`
+    );
+    expect(raw).toContain("NaN");
+    expect(() => JSON.parse(raw)).toThrow(); // strict parse fails, as expected
+    const parsed = parseJsonWithPythonNonFinite(raw) as Record<string, Record<string, unknown>>;
+    expect(parsed.results.v).toBeNull();
+  });
+});

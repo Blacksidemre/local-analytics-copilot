@@ -1,0 +1,1166 @@
+@import "tailwindcss/index.css";
+
+/* ═══════════════════════════════════════════════════════════
+   Tailwind v4 Theme Registration
+   Defines the semantic color names Tailwind generates utilities for.
+   Initial values = Vanilla light. Overridden per-theme below.
+   ═══════════════════════════════════════════════════════════ */
+@theme {
+  /* Surface & text */
+  --color-surface-0: #f8faf9;
+  --color-surface-1: #ffffff;
+  --color-surface-2: #f3f4f6;
+  --color-t-primary: #111827;
+  --color-t-secondary: #6b7280;
+  --color-t-tertiary: #9ca3af;
+
+  /* Accent — Emerald (matches design spec) */
+  --color-accent: #059669;
+  --color-accent-hover: #047857;
+  --color-accent-subtle: #ecfdf5;
+  --color-accent-text: #047857;
+
+  /* Borders & chrome */
+  --color-border-default: #e5e7eb;
+  --color-table-header-bg: #f9fafb;
+  --color-table-row-hover: #f9fafb;
+  --color-table-divider: #f3f4f6;
+  --color-surface-btn: #f3f4f6;
+  --color-surface-btn-hover: #e5e7eb;
+  --color-t-btn: #374151;
+  --color-surface-input: #ffffff;
+  --color-surface-dropzone: #f9fafb;
+  --color-border-dropzone: #d1d5db;
+  --color-surface-dropdown: #ffffff;
+  --color-rule: transparent;
+
+  /* Semantic content: trends */
+  --color-trend-up: #16a34a;
+  --color-trend-down: #dc2626;
+
+  /* Semantic content: severity — info */
+  --color-info-bg: #eff6ff;
+  --color-info-border: #bfdbfe;
+  --color-info-text: #1e40af;
+
+  /* Semantic content: severity — warning */
+  --color-warning-bg: #fffbeb;
+  --color-warning-border: #fde68a;
+  --color-warning-text: #92400e;
+
+  /* Semantic content: severity — success */
+  --color-success-bg: #f0fdf4;
+  --color-success-border: #bbf7d0;
+  --color-success-text: #166534;
+
+  /* Semantic content: severity — error */
+  --color-error-bg: #fef2f2;
+  --color-error-border: #fecaca;
+  --color-error-text: #991b1b;
+
+  /* Semantic content: table highlights */
+  --color-highlight-max: #16a34a;
+  --color-highlight-min: #dc2626;
+
+  /* Spacing & density */
+  --spacing-card: 1rem;
+  --spacing-section: 16px;
+
+  /* Border radius */
+  --radius-card: 12px;
+  --radius-input: 14px;
+  --radius-badge: 8px;
+
+  /* Shadows */
+  --shadow-card: 0 1px 3px rgba(0, 0, 0, 0.05);
+  --shadow-elevated: 0 8px 24px rgba(0, 0, 0, 0.1);
+
+  /* Dark surfaces (drawers, rails, panels — always dark regardless of mode) */
+  --color-surface-dark: #1e293b;
+  --color-surface-dark-2: #334155;
+  --color-surface-dark-3: #475569;
+  --color-surface-dark-text: #f1f5f9;
+  --color-surface-dark-text2: #cbd5e1;
+  --color-surface-dark-text3: #94a3b8;
+  --color-surface-dark-text4: #64748b;
+
+  /* Hero & insight */
+  --color-hero-bg: #ecfdf5;
+  --color-insight-bg: #fffbeb;
+  --color-insight-text: #92400e;
+
+  /* Chart tokens */
+  --chart-bar-radius: 6px 6px 2px 2px;
+  /* First three series colors as CSS tokens so SSR'd previews resolve via the
+     cascade (no hydration mismatch). MUST mirror THEME_CHART_COLORS in
+     src/components/theme/chart-theme.ts — a test guards the sync. */
+  --color-series-1: #6366f1;
+  --color-series-2: #10b981;
+  --color-series-3: #f59e0b;
+
+  /* Fonts */
+  --font-sans: var(--font-geist-sans);
+  --font-mono: var(--font-geist-mono);
+
+  /* Typography sizes (consumed via var() in inline styles) */
+  --text-hero: clamp(2.25rem, 6vw, 3.25rem);
+  --text-subhead: clamp(1rem, 2.2vw, 1.0625rem);
+}
+
+/* ═══════════════════════════════════════════════════════════
+   NON-COLOR tokens (radius, shadow, etc.)
+   These are read via var() in inline styles, not as Tailwind utilities
+   ═══════════════════════════════════════════════════════════ */
+:root {
+  /* Z-index scale */
+  --z-base: 1;
+  --z-rail: 180;
+  --z-topbar: 250;
+  --z-drawer-overlay: 200;
+  --z-drawer: 210;
+  --z-artifacts-overlay: 300;
+  --z-artifacts: 310;
+  --z-export-dropdown: 260;
+
+  --border-card: 1px solid var(--color-border-default);
+  --ring-focus: 0 0 0 2px rgba(5, 150, 105, 0.25);
+  --radius-button: 8px;
+  --transition-speed: 150ms;
+  --surface-card-border: 1px solid var(--color-border-default);
+  --rule-color: transparent;
+
+  /* Density tokens (aliased from @theme spacing) */
+  --padding-card: var(--spacing-card);
+  --gap-section: var(--spacing-section);
+  --gap-component: var(--spacing-section);
+
+  /* Typography tokens */
+  --font-heading-weight: 800;
+  --font-label-weight: 500;
+  --font-label-transform: none;
+  --font-label-tracking: 0;
+  --chart-title-size: 0.875rem;
+  --chart-title-weight: 600;
+  --stat-value-weight: 700;
+
+  /* Page background — clean, barely green-tinted */
+  --bg-page: #f8faf9;
+
+  /* Panel background — solid gradient from same family as page */
+  --bg-panel: linear-gradient(180deg, #ffffff 0%, #f8f9fd 100%);
+
+  /* Syntax highlighting */
+  --syntax-comment: #6b7280;
+  --syntax-string: #16a34a;
+  --syntax-keyword: #9333ea;
+  --syntax-builtin: #2563eb;
+  --syntax-number: #d97706;
+}
+
+/* ═══════════════════════════════════════════════════════════
+   VANILLA — Default (light)
+   Base values already set by @theme inline above.
+   Only dark overrides needed here.
+   ═══════════════════════════════════════════════════════════ */
+/* Vanilla dark — via system preference (not overridden by explicit light) */
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme]):not([data-mode="light"]),
+  [data-theme="vanilla"]:not([data-mode="light"]) {
+    color-scheme: dark;
+    --color-surface-0: #030712;
+    --color-surface-1: #111827;
+    --color-surface-2: #1f2937;
+    --color-t-primary: #f9fafb;
+    --color-t-secondary: #9ca3af;
+    --color-t-tertiary: #6b7280;
+    --color-accent: #34d399;
+    --color-accent-hover: #10b981;
+    --color-accent-subtle: rgba(5, 150, 105, 0.12);
+    --color-accent-text: #6ee7b7;
+    --color-border-default: #374151;
+    --ring-focus: 0 0 0 2px rgba(5, 150, 105, 0.3);
+    --shadow-card: 0 1px 3px rgba(0, 0, 0, 0.2);
+    --shadow-elevated: 0 8px 24px rgba(0, 0, 0, 0.4);
+    --color-table-header-bg: #1f2937;
+    --color-table-row-hover: #1f2937;
+    --color-table-divider: #1f2937;
+    --color-surface-btn: #1f2937;
+    --color-surface-btn-hover: #374151;
+    --color-t-btn: #d1d5db;
+    --color-surface-input: #111827;
+    --color-surface-dropzone: #111827;
+    --color-border-dropzone: #374151;
+    --color-surface-dropdown: #1f2937;
+    --bg-page: #0f1117;
+    --bg-panel: #111827;
+    --syntax-comment: #9ca3af;
+    --syntax-string: #4ade80;
+    --syntax-keyword: #c084fc;
+    --syntax-builtin: #60a5fa;
+    --syntax-number: #fbbf24;
+    --color-trend-up: #4ade80;
+    --color-trend-down: #f87171;
+    --color-info-bg: rgba(59, 130, 246, 0.1);
+    --color-info-border: rgba(59, 130, 246, 0.3);
+    --color-info-text: #93c5fd;
+    --color-warning-bg: rgba(245, 158, 11, 0.1);
+    --color-warning-border: rgba(245, 158, 11, 0.3);
+    --color-warning-text: #fcd34d;
+    --color-success-bg: rgba(34, 197, 94, 0.1);
+    --color-success-border: rgba(34, 197, 94, 0.3);
+    --color-success-text: #86efac;
+    --color-error-bg: rgba(239, 68, 68, 0.1);
+    --color-error-border: rgba(239, 68, 68, 0.3);
+    --color-error-text: #fca5a5;
+    --color-highlight-max: #4ade80;
+    --color-highlight-min: #f87171;
+  }
+}
+/* Vanilla dark — via explicit data-mode="dark" toggle */
+:root[data-mode="dark"]:not([data-theme]),
+:root[data-mode="dark"][data-theme="vanilla"] {
+  color-scheme: dark;
+  --color-surface-0: #030712;
+  --color-surface-1: #111827;
+  --color-surface-2: #1f2937;
+  --color-t-primary: #f9fafb;
+  --color-t-secondary: #9ca3af;
+  --color-t-tertiary: #6b7280;
+  --color-accent: #34d399;
+  --color-accent-hover: #10b981;
+  --color-accent-subtle: rgba(5, 150, 105, 0.12);
+  --color-accent-text: #6ee7b7;
+  --color-border-default: #374151;
+  --ring-focus: 0 0 0 2px rgba(5, 150, 105, 0.3);
+  --shadow-card: 0 1px 3px rgba(0, 0, 0, 0.2);
+  --shadow-elevated: 0 8px 24px rgba(0, 0, 0, 0.4);
+  --color-table-header-bg: #1f2937;
+  --color-table-row-hover: #1f2937;
+  --color-table-divider: #1f2937;
+  --color-surface-btn: #1f2937;
+  --color-surface-btn-hover: #374151;
+  --color-t-btn: #d1d5db;
+  --color-surface-input: #111827;
+  --color-surface-dropzone: #111827;
+  --color-border-dropzone: #374151;
+  --color-surface-dropdown: #1f2937;
+  --bg-page: #0f1117;
+  --bg-panel: #111827;
+  --syntax-comment: #9ca3af;
+  --syntax-string: #4ade80;
+  --syntax-keyword: #c084fc;
+  --syntax-builtin: #60a5fa;
+  --syntax-number: #fbbf24;
+  --color-trend-up: #4ade80;
+  --color-trend-down: #f87171;
+  --color-info-bg: rgba(59, 130, 246, 0.1);
+  --color-info-border: rgba(59, 130, 246, 0.3);
+  --color-info-text: #93c5fd;
+  --color-warning-bg: rgba(245, 158, 11, 0.1);
+  --color-warning-border: rgba(245, 158, 11, 0.3);
+  --color-warning-text: #fcd34d;
+  --color-success-bg: rgba(34, 197, 94, 0.1);
+  --color-success-border: rgba(34, 197, 94, 0.3);
+  --color-success-text: #86efac;
+  --color-error-bg: rgba(239, 68, 68, 0.1);
+  --color-error-border: rgba(239, 68, 68, 0.3);
+  --color-error-text: #fca5a5;
+  --color-highlight-max: #4ade80;
+  --color-highlight-min: #f87171;
+}
+
+/* ═══════════════════════════════════════════════════════════
+   STAMEN — Cartographic Precision (light)
+   Inspired by Stamen Design: warm tones, scholarly,
+   map-like precision with subtle depth.
+   ═══════════════════════════════════════════════════════════ */
+[data-theme="stamen"] {
+  --color-surface-0: #fafaf8;
+  --color-surface-1: #ffffff;
+  --color-surface-2: #f5f4f0;
+  --color-t-primary: #112337;
+  --color-t-secondary: #5a6b7d;
+  --color-t-tertiary: #8e99a4;
+  --color-accent: #204ce5;
+  --color-accent-hover: #1a3db8;
+  --color-accent-subtle: #eef2fc;
+  --color-accent-text: #1a3db8;
+  --color-border-default: #e8e6e1;
+  --ring-focus: 0 0 0 2px rgba(32, 76, 229, 0.25);
+  --shadow-card: 0 1px 2px rgba(17, 35, 55, 0.05);
+  --shadow-elevated: 0 4px 12px rgba(17, 35, 55, 0.08);
+  --radius-card: 4px;
+  --radius-input: 4px;
+  --radius-button: 4px;
+  --radius-badge: 2px;
+  --transition-speed: 150ms;
+  --surface-card-border: 1px solid #e8e6e1;
+  --color-table-header-bg: #f5f4f0;
+  --color-table-row-hover: #fafaf8;
+  --color-table-divider: #f0eee9;
+  --color-surface-btn: #f5f4f0;
+  --color-surface-btn-hover: #e8e6e1;
+  --color-t-btn: #3a4d63;
+  --color-surface-input: #ffffff;
+  --color-surface-dropzone: #f5f4f0;
+  --color-border-dropzone: #d5d2cb;
+  --color-surface-dropdown: #ffffff;
+  --color-rule: transparent;
+
+  /* Stamen: warm parchment gradient */
+  --bg-page: linear-gradient(168deg, #fafaf8 0%, #f3efe6 50%, #f0ede5 100%);
+  --bg-panel: linear-gradient(180deg, #fefefa 0%, #f8f6f0 100%);
+
+  /* Stamen density & typography */
+  --padding-card: 0.75rem;
+  --gap-section: 12px;
+  --gap-component: 12px;
+  --font-heading-weight: 600;
+  --font-label-weight: 600;
+  --font-label-transform: uppercase;
+  --font-label-tracking: 0.05em;
+  --chart-title-size: 0.8125rem;
+  --chart-title-weight: 600;
+  --stat-value-weight: 700;
+  --color-series-1: #204ce5;
+  --color-series-2: #d4956a;
+  --color-series-3: #6aafb8;
+
+  /* Stamen semantic: muted, scholarly tones */
+  --color-trend-up: #5d8c4e;
+  --color-trend-down: #c05a3c;
+  --color-info-bg: #eef2fc;
+  --color-info-border: #c4d4f4;
+  --color-info-text: #1a3db8;
+  --color-warning-bg: #fdf6e8;
+  --color-warning-border: #e8d5a0;
+  --color-warning-text: #8b6914;
+  --color-success-bg: #f0f5ed;
+  --color-success-border: #c2d4b8;
+  --color-success-text: #3d6b30;
+  --color-error-bg: #fdf0ec;
+  --color-error-border: #e8c4b8;
+  --color-error-text: #9e3a20;
+  --color-highlight-max: #5d8c4e;
+  --color-highlight-min: #c05a3c;
+
+  /* Stamen: dark surfaces */
+  --color-surface-dark: #1c1917;
+  --color-surface-dark-2: #292524;
+  --color-surface-dark-3: #44403c;
+  --color-surface-dark-text: #fafaf9;
+  --color-surface-dark-text2: #d6d3d1;
+  --color-surface-dark-text3: #a8a29e;
+  --color-surface-dark-text4: #78716c;
+  --color-hero-bg: #eef2fc;
+  --color-insight-bg: #fdf6e8;
+  --color-insight-text: #8b6914;
+  --chart-bar-radius: 0;
+}
+
+@media (prefers-color-scheme: dark) {
+  [data-theme="stamen"]:not([data-mode="light"]) {
+    color-scheme: dark;
+    --color-surface-0: #0a1220;
+    --color-surface-1: #142030;
+    --color-surface-2: #1e2e42;
+    --color-t-primary: #f0f0ed;
+    --color-t-secondary: #8e99a4;
+    --color-t-tertiary: #5a6b7d;
+    --color-accent: #5b8def;
+    --color-accent-hover: #4a7de0;
+    --color-accent-subtle: rgba(91, 141, 239, 0.1);
+    --color-accent-text: #7fa8f4;
+    --color-border-default: rgba(240, 240, 237, 0.08);
+    --ring-focus: 0 0 0 2px rgba(91, 141, 239, 0.3);
+    --shadow-card: 0 1px 2px rgba(0, 0, 0, 0.2);
+    --shadow-elevated: 0 4px 12px rgba(0, 0, 0, 0.3);
+    --color-table-header-bg: #1e2e42;
+    --color-table-row-hover: rgba(20, 32, 48, 0.5);
+    --color-table-divider: #1e2e42;
+    --color-surface-btn: #1e2e42;
+    --color-surface-btn-hover: #2a3e56;
+    --color-t-btn: #c8ccd0;
+    --color-surface-input: #142030;
+    --color-surface-dropzone: rgba(30, 46, 66, 0.5);
+    --color-border-dropzone: rgba(142, 153, 164, 0.3);
+    --color-surface-dropdown: #142030;
+    --bg-page: linear-gradient(168deg, #0a1220 0%, #0e1828 50%, #0b1624 100%);
+    --bg-panel: linear-gradient(180deg, #142030 0%, #111d2c 100%);
+    --syntax-comment: #8e99a4;
+    --syntax-string: #7fb872;
+    --syntax-keyword: #7fa8f4;
+    --syntax-builtin: #5b8def;
+    --syntax-number: #e8c590;
+
+    --color-trend-up: #7fb872;
+    --color-trend-down: #e07a5f;
+    --color-info-bg: rgba(91, 141, 239, 0.1);
+    --color-info-border: rgba(91, 141, 239, 0.3);
+    --color-info-text: #7fa8f4;
+    --color-warning-bg: rgba(212, 149, 106, 0.1);
+    --color-warning-border: rgba(212, 149, 106, 0.3);
+    --color-warning-text: #e8c590;
+    --color-success-bg: rgba(93, 140, 78, 0.1);
+    --color-success-border: rgba(93, 140, 78, 0.3);
+    --color-success-text: #7fb872;
+    --color-error-bg: rgba(192, 90, 60, 0.1);
+    --color-error-border: rgba(192, 90, 60, 0.3);
+    --color-error-text: #e07a5f;
+    --color-highlight-max: #7fb872;
+    --color-highlight-min: #e07a5f;
+  }
+}
+[data-theme="stamen"][data-mode="dark"] {
+  color-scheme: dark;
+  --color-surface-0: #0a1220;
+  --color-surface-1: #142030;
+  --color-surface-2: #1e2e42;
+  --color-t-primary: #f0f0ed;
+  --color-t-secondary: #8e99a4;
+  --color-t-tertiary: #5a6b7d;
+  --color-accent: #5b8def;
+  --color-accent-hover: #4a7de0;
+  --color-accent-subtle: rgba(91, 141, 239, 0.1);
+  --color-accent-text: #7fa8f4;
+  --color-border-default: rgba(240, 240, 237, 0.08);
+  --ring-focus: 0 0 0 2px rgba(91, 141, 239, 0.3);
+  --shadow-card: 0 1px 2px rgba(0, 0, 0, 0.2);
+  --shadow-elevated: 0 4px 12px rgba(0, 0, 0, 0.3);
+  --color-table-header-bg: #1e2e42;
+  --color-table-row-hover: rgba(20, 32, 48, 0.5);
+  --color-table-divider: #1e2e42;
+  --color-surface-btn: #1e2e42;
+  --color-surface-btn-hover: #2a3e56;
+  --color-t-btn: #c8ccd0;
+  --color-surface-input: #142030;
+  --color-surface-dropzone: rgba(30, 46, 66, 0.5);
+  --color-border-dropzone: rgba(142, 153, 164, 0.3);
+  --color-surface-dropdown: #142030;
+  --bg-page: linear-gradient(168deg, #0a1220 0%, #0e1828 50%, #0b1624 100%);
+  --bg-panel: linear-gradient(180deg, #142030 0%, #111d2c 100%);
+  --syntax-comment: #8e99a4;
+  --syntax-string: #7fb872;
+  --syntax-keyword: #7fa8f4;
+  --syntax-builtin: #5b8def;
+  --syntax-number: #e8c590;
+
+  --color-trend-up: #7fb872;
+  --color-trend-down: #e07a5f;
+  --color-info-bg: rgba(91, 141, 239, 0.1);
+  --color-info-border: rgba(91, 141, 239, 0.3);
+  --color-info-text: #7fa8f4;
+  --color-warning-bg: rgba(212, 149, 106, 0.1);
+  --color-warning-border: rgba(212, 149, 106, 0.3);
+  --color-warning-text: #e8c590;
+  --color-success-bg: rgba(93, 140, 78, 0.1);
+  --color-success-border: rgba(93, 140, 78, 0.3);
+  --color-success-text: #7fb872;
+  --color-error-bg: rgba(192, 90, 60, 0.1);
+  --color-error-border: rgba(192, 90, 60, 0.3);
+  --color-error-text: #e07a5f;
+  --color-highlight-max: #7fb872;
+  --color-highlight-min: #e07a5f;
+}
+
+/* ═══════════════════════════════════════════════════════════
+   IIB — Information is Beautiful (light)
+   Inspired by David McCandless: vivid, playful,
+   encyclopedic data-viz with teal accent.
+   ═══════════════════════════════════════════════════════════ */
+[data-theme="iib"] {
+  --color-surface-0: #ffffff;
+  --color-surface-1: #ffffff;
+  --color-surface-2: #f5f7fa;
+  --color-t-primary: #1a1a2e;
+  --color-t-secondary: #5c5c7a;
+  --color-t-tertiary: #9494aa;
+  --color-accent: #00acc1;
+  --color-accent-hover: #0097a7;
+  --color-accent-subtle: #e0f7fa;
+  --color-accent-text: #00838f;
+  --color-border-default: #e8ebf0;
+  --ring-focus: 0 0 0 2px rgba(0, 172, 193, 0.25);
+  --shadow-card: 0 1px 3px rgba(26, 26, 46, 0.05);
+  --shadow-elevated: 0 4px 16px rgba(26, 26, 46, 0.08);
+  --radius-card: 12px;
+  --radius-input: 10px;
+  --radius-button: 10px;
+  --radius-badge: 8px;
+  --transition-speed: 200ms;
+  --surface-card-border: 1px solid #e8ebf0;
+  --color-table-header-bg: #f5f7fa;
+  --color-table-row-hover: #f8fafe;
+  --color-table-divider: #f0f2f5;
+  --color-surface-btn: #f5f7fa;
+  --color-surface-btn-hover: #e8ebf0;
+  --color-t-btn: #3a3a54;
+  --color-surface-input: #ffffff;
+  --color-surface-dropzone: #f5f7fa;
+  --color-border-dropzone: #c8ced8;
+  --color-surface-dropdown: #ffffff;
+  --color-rule: transparent;
+
+  /* IiB: airy teal-tinted gradient */
+  --bg-page: linear-gradient(168deg, #ffffff 0%, #f0f8fa 40%, #ebf5f7 100%);
+  --bg-panel: linear-gradient(180deg, #ffffff 0%, #f7fcfd 100%);
+
+  /* IiB density & typography */
+  --padding-card: 1.5rem;
+  --gap-section: 20px;
+  --gap-component: 20px;
+  --font-heading-weight: 700;
+  --font-label-weight: 500;
+  --font-label-transform: none;
+  --font-label-tracking: 0;
+  --chart-title-size: 0.9375rem;
+  --chart-title-weight: 700;
+  --stat-value-weight: 800;
+  --color-series-1: #00acc1;
+  --color-series-2: #f06292;
+  --color-series-3: #ffb74d;
+
+  /* IiB semantic: vivid, saturated tones */
+  --color-trend-up: #43a047;
+  --color-trend-down: #e53935;
+  --color-info-bg: #e0f7fa;
+  --color-info-border: #80deea;
+  --color-info-text: #00838f;
+  --color-warning-bg: #fff8e1;
+  --color-warning-border: #ffd54f;
+  --color-warning-text: #e65100;
+  --color-success-bg: #e8f5e9;
+  --color-success-border: #a5d6a7;
+  --color-success-text: #2e7d32;
+  --color-error-bg: #ffebee;
+  --color-error-border: #ef9a9a;
+  --color-error-text: #c62828;
+  --color-highlight-max: #43a047;
+  --color-highlight-min: #e53935;
+
+  /* IIB: dark surfaces */
+  --color-surface-dark: #1a1a2e;
+  --color-surface-dark-2: #2d2d4a;
+  --color-surface-dark-3: #45456a;
+  --color-surface-dark-text: #f0f0ff;
+  --color-surface-dark-text2: #c8c8e0;
+  --color-surface-dark-text3: #9b9bb5;
+  --color-surface-dark-text4: #6b6b8a;
+  --color-hero-bg: #fef2f2;
+  --color-insight-bg: #fff8e1;
+  --color-insight-text: #e65100;
+  --chart-bar-radius: 8px 8px 2px 2px;
+}
+
+@media (prefers-color-scheme: dark) {
+  [data-theme="iib"]:not([data-mode="light"]) {
+    color-scheme: dark;
+    --color-surface-0: #0d0d1a;
+    --color-surface-1: #1a1a2e;
+    --color-surface-2: #252540;
+    --color-t-primary: #f0f0f5;
+    --color-t-secondary: #9494aa;
+    --color-t-tertiary: #5c5c7a;
+    --color-accent: #26c6da;
+    --color-accent-hover: #00bcd4;
+    --color-accent-subtle: rgba(38, 198, 218, 0.1);
+    --color-accent-text: #4dd0e1;
+    --color-border-default: rgba(240, 240, 245, 0.08);
+    --ring-focus: 0 0 0 2px rgba(38, 198, 218, 0.3);
+    --shadow-card: 0 1px 3px rgba(0, 0, 0, 0.2);
+    --shadow-elevated: 0 4px 16px rgba(0, 0, 0, 0.3);
+    --color-table-header-bg: #252540;
+    --color-table-row-hover: rgba(26, 26, 46, 0.5);
+    --color-table-divider: #252540;
+    --color-surface-btn: #252540;
+    --color-surface-btn-hover: #33335a;
+    --color-t-btn: #c8c8da;
+    --color-surface-input: #1a1a2e;
+    --color-surface-dropzone: rgba(37, 37, 64, 0.5);
+    --color-border-dropzone: rgba(148, 148, 170, 0.3);
+    --color-surface-dropdown: #1a1a2e;
+    --bg-page: linear-gradient(168deg, #0d0d1a 0%, #0f1424 40%, #111228 100%);
+    --bg-panel: linear-gradient(180deg, #1a1a2e 0%, #171730 100%);
+    --syntax-comment: #9494aa;
+    --syntax-string: #81c784;
+    --syntax-keyword: #4dd0e1;
+    --syntax-builtin: #26c6da;
+    --syntax-number: #ffd54f;
+
+    --color-trend-up: #66bb6a;
+    --color-trend-down: #ef5350;
+    --color-info-bg: rgba(0, 172, 193, 0.1);
+    --color-info-border: rgba(0, 172, 193, 0.3);
+    --color-info-text: #4dd0e1;
+    --color-warning-bg: rgba(255, 183, 77, 0.1);
+    --color-warning-border: rgba(255, 183, 77, 0.3);
+    --color-warning-text: #ffd54f;
+    --color-success-bg: rgba(102, 187, 106, 0.1);
+    --color-success-border: rgba(102, 187, 106, 0.3);
+    --color-success-text: #81c784;
+    --color-error-bg: rgba(239, 83, 80, 0.1);
+    --color-error-border: rgba(239, 83, 80, 0.3);
+    --color-error-text: #ef9a9a;
+    --color-highlight-max: #66bb6a;
+    --color-highlight-min: #ef5350;
+  }
+}
+[data-theme="iib"][data-mode="dark"] {
+  color-scheme: dark;
+  --color-surface-0: #0d0d1a;
+  --color-surface-1: #1a1a2e;
+  --color-surface-2: #252540;
+  --color-t-primary: #f0f0f5;
+  --color-t-secondary: #9494aa;
+  --color-t-tertiary: #5c5c7a;
+  --color-accent: #26c6da;
+  --color-accent-hover: #00bcd4;
+  --color-accent-subtle: rgba(38, 198, 218, 0.1);
+  --color-accent-text: #4dd0e1;
+  --color-border-default: rgba(240, 240, 245, 0.08);
+  --ring-focus: 0 0 0 2px rgba(38, 198, 218, 0.3);
+  --shadow-card: 0 1px 3px rgba(0, 0, 0, 0.2);
+  --shadow-elevated: 0 4px 16px rgba(0, 0, 0, 0.3);
+  --color-table-header-bg: #252540;
+  --color-table-row-hover: rgba(26, 26, 46, 0.5);
+  --color-table-divider: #252540;
+  --color-surface-btn: #252540;
+  --color-surface-btn-hover: #33335a;
+  --color-t-btn: #c8c8da;
+  --color-surface-input: #1a1a2e;
+  --color-surface-dropzone: rgba(37, 37, 64, 0.5);
+  --color-border-dropzone: rgba(148, 148, 170, 0.3);
+  --color-surface-dropdown: #1a1a2e;
+  --bg-page: linear-gradient(168deg, #0d0d1a 0%, #0f1424 40%, #111228 100%);
+  --bg-panel: linear-gradient(180deg, #1a1a2e 0%, #171730 100%);
+  --syntax-comment: #9494aa;
+  --syntax-string: #81c784;
+  --syntax-keyword: #4dd0e1;
+  --syntax-builtin: #26c6da;
+  --syntax-number: #ffd54f;
+
+  --color-trend-up: #66bb6a;
+  --color-trend-down: #ef5350;
+  --color-info-bg: rgba(0, 172, 193, 0.1);
+  --color-info-border: rgba(0, 172, 193, 0.3);
+  --color-info-text: #4dd0e1;
+  --color-warning-bg: rgba(255, 183, 77, 0.1);
+  --color-warning-border: rgba(255, 183, 77, 0.3);
+  --color-warning-text: #ffd54f;
+  --color-success-bg: rgba(102, 187, 106, 0.1);
+  --color-success-border: rgba(102, 187, 106, 0.3);
+  --color-success-text: #81c784;
+  --color-error-bg: rgba(239, 83, 80, 0.1);
+  --color-error-border: rgba(239, 83, 80, 0.3);
+  --color-error-text: #ef9a9a;
+  --color-highlight-max: #66bb6a;
+  --color-highlight-min: #ef5350;
+}
+
+/* ═══════════════════════════════════════════════════════════
+   PENTAGRAM — Reductive Authority (light)
+   Inspired by Pentagram: black/white, red accent,
+   zero radius, zero shadow, typography-driven.
+   ═══════════════════════════════════════════════════════════ */
+[data-theme="pentagram"] {
+  --color-surface-0: #ffffff;
+  --color-surface-1: #ffffff;
+  --color-surface-2: #f5f5f5;
+  --color-t-primary: #000000;
+  --color-t-secondary: #4a4a4a;
+  --color-t-tertiary: #8a8a8a;
+  --color-accent: #cc0000;
+  --color-accent-hover: #a30000;
+  --color-accent-subtle: #fff0f0;
+  --color-accent-text: #a30000;
+  --color-border-default: #e0e0e0;
+  --ring-focus: 0 0 0 2px rgba(204, 0, 0, 0.25);
+  --shadow-card: none;
+  --shadow-elevated: none;
+  --radius-card: 0px;
+  --radius-input: 0px;
+  --radius-button: 0px;
+  --radius-badge: 0px;
+  --transition-speed: 100ms;
+  --surface-card-border: none;
+  --rule-color: #000000;
+  --color-table-header-bg: transparent;
+  --color-table-row-hover: transparent;
+  --color-table-divider: #e0e0e0;
+  --color-surface-btn: transparent;
+  --color-surface-btn-hover: #f5f5f5;
+  --color-t-btn: #000000;
+  --color-surface-input: transparent;
+  --color-surface-dropzone: transparent;
+  --color-border-dropzone: #000000;
+  --color-surface-dropdown: #ffffff;
+  --color-rule: #000000;
+
+  /* Pentagram: near-flat, barely-there warm gray */
+  --bg-page: linear-gradient(180deg, #ffffff 0%, #fafafa 100%);
+  --bg-panel: #ffffff;
+
+  /* Pentagram density & typography */
+  --padding-card: 0.75rem;
+  --gap-section: 12px;
+  --gap-component: 12px;
+  --font-heading-weight: 400;
+  --font-label-weight: 300;
+  --font-label-transform: uppercase;
+  --font-label-tracking: 0.1em;
+  --chart-title-size: 0.8125rem;
+  --chart-title-weight: 400;
+  --stat-value-weight: 700;
+  --color-series-1: #cc0000;
+  --color-series-2: #2b2b2b;
+  --color-series-3: #6b7280;
+
+  /* Pentagram semantic: reductive, monochrome + red signal */
+  --color-trend-up: #000000;
+  --color-trend-down: #cc0000;
+  --color-info-bg: #f5f5f5;
+  --color-info-border: #d0d0d0;
+  --color-info-text: #2b2b2b;
+  --color-warning-bg: #f5f5f5;
+  --color-warning-border: #8a8a8a;
+  --color-warning-text: #000000;
+  --color-success-bg: #f5f5f5;
+  --color-success-border: #d0d0d0;
+  --color-success-text: #2b2b2b;
+  --color-error-bg: #fff0f0;
+  --color-error-border: #cc0000;
+  --color-error-text: #cc0000;
+  --color-highlight-max: #000000;
+  --color-highlight-min: #cc0000;
+
+  /* Pentagram: dark surfaces */
+  --color-surface-dark: #111111;
+  --color-surface-dark-2: #222222;
+  --color-surface-dark-3: #444444;
+  --color-surface-dark-text: #ffffff;
+  --color-surface-dark-text2: #cccccc;
+  --color-surface-dark-text3: #999999;
+  --color-surface-dark-text4: #666666;
+  --color-hero-bg: #f5f5f5;
+  --color-insight-bg: #f5f5f5;
+  --color-insight-text: #333333;
+  --chart-bar-radius: 0;
+}
+
+@media (prefers-color-scheme: dark) {
+  [data-theme="pentagram"]:not([data-mode="light"]) {
+    color-scheme: dark;
+    --color-surface-0: #000000;
+    --color-surface-1: #0a0a0a;
+    --color-surface-2: #161616;
+    --color-t-primary: #ffffff;
+    --color-t-secondary: #b0b0b0;
+    --color-t-tertiary: #707070;
+    --color-accent: #ef4444;
+    --color-accent-hover: #dc2626;
+    --color-accent-subtle: rgba(239, 68, 68, 0.08);
+    --color-accent-text: #fca5a5;
+    --color-border-default: #1f1f1f;
+    --ring-focus: 0 0 0 2px rgba(239, 68, 68, 0.3);
+    --rule-color: #ffffff;
+    --color-table-header-bg: transparent;
+    --color-table-row-hover: transparent;
+    --color-table-divider: #1f1f1f;
+    --color-surface-btn: transparent;
+    --color-surface-btn-hover: #161616;
+    --color-t-btn: #ffffff;
+    --color-surface-input: transparent;
+    --color-surface-dropzone: transparent;
+    --color-border-dropzone: #ffffff;
+    --color-surface-dropdown: #0a0a0a;
+    --color-rule: #ffffff;
+    --bg-page: linear-gradient(180deg, #000000 0%, #050505 100%);
+    --bg-panel: #0a0a0a;
+    --syntax-comment: #707070;
+    --syntax-string: #b0b0b0;
+    --syntax-keyword: #ffffff;
+    --syntax-builtin: #fca5a5;
+    --syntax-number: #b0b0b0;
+
+    --color-trend-up: #ffffff;
+    --color-trend-down: #ef4444;
+    --color-info-bg: rgba(255, 255, 255, 0.05);
+    --color-info-border: #404040;
+    --color-info-text: #b0b0b0;
+    --color-warning-bg: rgba(255, 255, 255, 0.05);
+    --color-warning-border: #707070;
+    --color-warning-text: #ffffff;
+    --color-success-bg: rgba(255, 255, 255, 0.05);
+    --color-success-border: #404040;
+    --color-success-text: #b0b0b0;
+    --color-error-bg: rgba(239, 68, 68, 0.08);
+    --color-error-border: #ef4444;
+    --color-error-text: #fca5a5;
+    --color-highlight-max: #ffffff;
+    --color-highlight-min: #ef4444;
+  }
+}
+[data-theme="pentagram"][data-mode="dark"] {
+  color-scheme: dark;
+  --color-surface-0: #000000;
+  --color-surface-1: #0a0a0a;
+  --color-surface-2: #161616;
+  --color-t-primary: #ffffff;
+  --color-t-secondary: #b0b0b0;
+  --color-t-tertiary: #707070;
+  --color-accent: #ef4444;
+  --color-accent-hover: #dc2626;
+  --color-accent-subtle: rgba(239, 68, 68, 0.08);
+  --color-accent-text: #fca5a5;
+  --color-border-default: #1f1f1f;
+  --ring-focus: 0 0 0 2px rgba(239, 68, 68, 0.3);
+  --rule-color: #ffffff;
+  --color-table-header-bg: transparent;
+  --color-table-row-hover: transparent;
+  --color-table-divider: #1f1f1f;
+  --color-surface-btn: transparent;
+  --color-surface-btn-hover: #161616;
+  --color-t-btn: #ffffff;
+  --color-surface-input: transparent;
+  --color-surface-dropzone: transparent;
+  --color-border-dropzone: #ffffff;
+  --color-surface-dropdown: #0a0a0a;
+  --color-rule: #ffffff;
+  --bg-page: linear-gradient(180deg, #000000 0%, #050505 100%);
+  --bg-panel: #0a0a0a;
+  --syntax-comment: #707070;
+  --syntax-string: #b0b0b0;
+  --syntax-keyword: #ffffff;
+  --syntax-builtin: #fca5a5;
+  --syntax-number: #b0b0b0;
+
+  --color-trend-up: #ffffff;
+  --color-trend-down: #ef4444;
+  --color-info-bg: rgba(255, 255, 255, 0.05);
+  --color-info-border: #404040;
+  --color-info-text: #b0b0b0;
+  --color-warning-bg: rgba(255, 255, 255, 0.05);
+  --color-warning-border: #707070;
+  --color-warning-text: #ffffff;
+  --color-success-bg: rgba(255, 255, 255, 0.05);
+  --color-success-border: #404040;
+  --color-success-text: #b0b0b0;
+  --color-error-bg: rgba(239, 68, 68, 0.08);
+  --color-error-border: #ef4444;
+  --color-error-text: #fca5a5;
+  --color-highlight-max: #ffffff;
+  --color-highlight-min: #ef4444;
+}
+
+/* ═══════════════════════════════════════════════════════════
+   Base styles
+   ═══════════════════════════════════════════════════════════ */
+body {
+  background: var(--bg-page);
+  color: var(--color-t-primary);
+  font-family: var(--font-sans), Arial, Helvetica, sans-serif;
+  min-height: 100vh;
+}
+
+/* ═══════════════════════════════════════════════════════════
+   Theme-specific structural rules
+   ═══════════════════════════════════════════════════════════ */
+
+/* Pentagram structural rules on stat cards */
+[data-theme="pentagram"] .stat-card {
+  border-top: 2px solid var(--rule-color);
+  padding-top: 1rem;
+}
+
+/* Stamen: insight blocks use top border (map-legend style) */
+[data-theme="stamen"] .insight-block {
+  border-left: none !important;
+  padding-left: 0 !important;
+  border-top: 2px solid var(--color-accent);
+  padding-top: 0.75rem;
+}
+
+/* Pentagram: insight blocks use thin rule above, no accent */
+[data-theme="pentagram"] .insight-block {
+  border-left: none !important;
+  padding-left: 0 !important;
+  border-top: 1px solid var(--rule-color);
+  padding-top: 0.75rem;
+}
+
+/* ═══════════════════════════════════════════════════════════
+   Post-paint catch-all: auto-generated content theming
+   Uses :where() for zero specificity so any explicit Tailwind
+   class or component style will win. This ensures any raw HTML
+   injected by LLM-generated specs inherits theme tokens.
+   ═══════════════════════════════════════════════════════════ */
+
+/* Headings */
+.theme-card :where(h1, h2, h3, h4, h5, h6) {
+  color: var(--color-t-primary);
+}
+
+/* Body text */
+.theme-card :where(p, li) {
+  color: var(--color-t-secondary);
+}
+
+/* Links */
+.theme-card :where(a) {
+  color: var(--color-accent);
+}
+.theme-card :where(a:hover) {
+  color: var(--color-accent-hover);
+}
+
+/* Tables */
+.theme-card :where(th) {
+  background: var(--color-table-header-bg);
+  color: var(--color-t-secondary);
+  border-color: var(--color-table-divider);
+}
+.theme-card :where(td) {
+  color: var(--color-t-secondary);
+  border-color: var(--color-table-divider);
+}
+
+/* Form elements */
+.theme-card :where(input, select, textarea) {
+  background: var(--color-surface-input);
+  color: var(--color-t-primary);
+  border-color: var(--color-border-default);
+}
+
+/* Code */
+.theme-card :where(pre, code) {
+  background: var(--color-surface-2);
+  color: var(--color-t-primary);
+}
+
+/* Horizontal rules */
+.theme-card :where(hr) {
+  border-color: var(--color-border-default);
+}
+
+/* Blockquotes */
+.theme-card :where(blockquote) {
+  border-color: var(--color-accent);
+  color: var(--color-t-secondary);
+}
+
+/* ═══════════════════════════════════════════════════════════
+   Custom utilities
+   ═══════════════════════════════════════════════════════════ */
+@utility bg-panel {
+  background: var(--bg-panel);
+}
+
+@keyframes pulse {
+  0%,
+  100% {
+    opacity: 0.3;
+    transform: scale(0.8);
+  }
+  50% {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+@keyframes fadeUp {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/* Form transition: plays when the output style / view changes so the
+   re-shaped artifact visibly morphs in rather than snapping. */
+@keyframes formMorphIn {
+  from {
+    opacity: 0;
+    transform: translateY(10px) scale(0.985);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+.form-morph {
+  animation: formMorphIn 0.42s cubic-bezier(0.22, 0.61, 0.36, 1);
+}
+
+@keyframes indeterminate {
+  0% {
+    transform: translateX(-100%);
+  }
+  100% {
+    transform: translateX(400%);
+  }
+}
+
+@utility animate-indeterminate {
+  animation: indeterminate 1.5s ease-in-out infinite;
+}
+
+/* ═══════════════════════════════════════════════════════════
+   Responsive layout adjustments
+   ═══════════════════════════════════════════════════════════ */
+
+/* Mobile: stack source cards, tighter padding */
+@media (max-width: 767px) {
+  .source-cards-grid {
+    grid-template-columns: 1fr !important;
+  }
+  .main-inner {
+    padding-left: 16px !important;
+    padding-right: 16px !important;
+  }
+}
+
+/* Tablet: narrower content */
+@media (min-width: 768px) and (max-width: 1023px) {
+  .main-inner {
+    padding-left: 24px !important;
+    padding-right: 24px !important;
+  }
+}
+
+/* ═══════════════════════════════════════════════════════════
+   Recent sources list
+   ═══════════════════════════════════════════════════════════ */
+.recent-row:hover {
+  background: var(--color-accent-subtle);
+}
+/* Row actions fade in on hover (and stay reachable via keyboard focus). */
+.recent-actions {
+  opacity: 0;
+  transition: opacity 0.15s;
+}
+.recent-row:hover .recent-actions,
+.recent-actions:focus-within {
+  opacity: 1;
+}
+.recent-action-btn:hover:not(:disabled) {
+  background: var(--color-surface-2) !important;
+  color: var(--color-t-primary) !important;
+}
+
+/* ═══════════════════════════════════════════════════════════
+   Source card hover
+   ═══════════════════════════════════════════════════════════ */
+.source-card-hover:hover {
+  border-color: var(--color-accent) !important;
+}
+/* Only apply bg highlight to cards without a saved-connections tray */
+button.source-card-hover:hover {
+  background: var(--color-accent-subtle) !important;
+}
+/* Saved connection pills: distinct hover */
+.saved-conn-pill {
+  transition:
+    background 0.15s,
+    color 0.15s,
+    box-shadow 0.15s;
+}
+.saved-conn-pill:hover {
+  background: var(--color-accent) !important;
+  color: white !important;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.12);
+}
+
+/* ═══════════════════════════════════════════════════════════
+   Dark surface override — always-dark context for drawers,
+   rails, and the artifacts bottom sheet. Reassigns CSS custom
+   properties so ALL Tailwind utilities resolve to dark values
+   within this scope. Mode-independent (stays dark in light mode).
+   ═══════════════════════════════════════════════════════════ */
+.dark-surface-override {
+  --color-surface-0: var(--color-surface-dark);
+  --color-surface-1: var(--color-surface-dark-2);
+  --color-surface-2: var(--color-surface-dark-3);
+  --color-t-primary: var(--color-surface-dark-text);
+  --color-t-secondary: var(--color-surface-dark-text2);
+  --color-t-tertiary: var(--color-surface-dark-text3);
+  --color-border-default: var(--color-surface-dark-3);
+  --color-table-header-bg: var(--color-surface-dark-3);
+  --color-table-divider: var(--color-surface-dark-3);
+  --color-table-row-hover: var(--color-surface-dark-2);
+  --color-surface-btn: var(--color-surface-dark-3);
+  --color-surface-btn-hover: var(--color-surface-dark-2);
+  --color-t-btn: var(--color-surface-dark-text2);
+  --color-surface-input: var(--color-surface-dark-2);
+  --color-surface-dropdown: var(--color-surface-dark-2);
+  --color-accent-subtle: rgba(5, 150, 105, 0.15);
+  --bg-page: var(--color-surface-dark);
+  --bg-panel: var(--color-surface-dark);
+  --shadow-card: 0 1px 3px rgba(0, 0, 0, 0.3);
+  /* Syntax highlighting: always bright-on-dark */
+  --syntax-comment: #9ca3af;
+  --syntax-string: #4ade80;
+  --syntax-keyword: #c084fc;
+  --syntax-builtin: #60a5fa;
+  --syntax-number: #fbbf24;
+}
+.dark-surface-override pre,
+.dark-surface-override code {
+  background: transparent;
+}
+
+/* ═══════════════════════════════════════════════════════════
+   Focus-visible ring for keyboard navigation
+   ═══════════════════════════════════════════════════════════ */
+:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 2px;
+}
+
+/* ═══════════════════════════════════════════════════════════
+   Reduced motion: disable decorative transitions and animations.
+   ESSENTIAL activity indicators (step spinners, working dots) are
+   excluded — a frozen spinner is indistinguishable from a hang,
+   which defeats the indicator's purpose. WCAG reduced-motion
+   guidance targets nonessential motion; continuous small-area
+   spinners communicating "still running" stay animated.
+   Mark an element essential with .animate-spin (Tailwind) or
+   data-motion="essential" (inline keyframe animations).
+   ═══════════════════════════════════════════════════════════ */
+@media (prefers-reduced-motion: reduce) {
+  *:not(.animate-spin):not([data-motion="essential"]),
+  *:not(.animate-spin):not([data-motion="essential"])::before,
+  *:not(.animate-spin):not([data-motion="essential"])::after {
+    /* animation: none, NOT a 0.01ms duration. Chrome leaves a
+       sub-millisecond animation "running" with its clock frozen at 0, so
+       the FROM keyframe paints forever — the dashboard Card sat
+       permanently at formMorphIn's from-state (scale(0.985)
+       translateY(10px)), and the MapLibre canvas under that ancestor
+       transform had its pointer math off by the scale factor: map pins
+       drifted against the basemap on every pan/zoom. Removing the
+       animation is also the more faithful reduced-motion behavior:
+       elements simply appear in their final state. */
+    animation: none !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+/* ═══════════════════════════════════════════════════════════
+   Plotly hover labels start hidden.
+
+   Chrome 151 defers SVG transform-attribute invalidation past forced
+   reflows, so a freshly created hover label paints its first frame
+   before its transform applies — a bubble flashing at the chart's
+   top-left origin. A stylesheet rule is part of a new node's INITIAL
+   style resolution (never deferred), so fresh labels are born hidden;
+   makePlotlyWrapper reveals each label one frame later, when its
+   transform has landed. Retired labels (renamed out of this selector
+   by the wrapper) stay visible for continuity between hover passes.
+   ═══════════════════════════════════════════════════════════ */
+.js-plotly-plot g.hoverlayer g.hovertext,
+.js-plotly-plot g.hoverlayer g.axistext {
+  visibility: hidden;
+}
