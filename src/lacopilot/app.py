@@ -24,6 +24,7 @@ from lacopilot.conversations import ConversationStore
 from lacopilot.dataset_uploads import save_uploaded_dataset
 from lacopilot.hardware import detect_hardware
 from lacopilot.ingestion import SUPPORTED_TABLE_EXTENSIONS, IngestionError, source_manifest
+from lacopilot.investigate_runtime import build_context_from_profile, run_local_investigation
 from lacopilot.knowledge import KnowledgeBase
 from lacopilot.llm import OllamaAgent
 from lacopilot.memory import LocalMemory
@@ -113,6 +114,15 @@ class AnalystHtmlReportRequest(AnalystAnalysisRequest):
 
 class AnalystPdfReportRequest(AnalystAnalysisRequest):
     output_name: str = Field(default="analyst_report.pdf", min_length=1, max_length=200)
+
+
+class AgentAnalysisRequest(DatasetProfileRequest):
+    question: str = Field(min_length=1, max_length=4000)
+    target_column: str | None = Field(default=None, min_length=1, max_length=200)
+    target_kind: Literal["binary", "continuous", "categorical"] | None = None
+    predictor_columns: list[str] | None = Field(default=None, max_length=20)
+    language: Literal["tr", "en"] = "tr"
+    model: str | None = Field(default=None, max_length=200)
 
 
 class KnowledgeIngestRequest(BaseModel):
@@ -395,6 +405,65 @@ def analyst_analysis(req: AnalystAnalysisRequest):
             status_code=422,
             detail={"code": "invalid_analysis_request", "message": str(exc)},
         ) from exc
+
+
+@app.post("/api/v1/analysis/agent")
+def agent_analysis(req: AgentAnalysisRequest):
+    if (req.target_column is None) != (req.target_kind is None):
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "code": "incomplete_target_semantics",
+                "message": "Hedef analizi için hem hedef sütun hem hedef türü seçilmelidir.",
+                "recoverable": True,
+            },
+        )
+    profile = _profile_or_http_error(req.file_path, req.sheet_name)
+    try:
+        context = build_context_from_profile(
+            req.file_path,
+            profile,
+            sheet_name=req.sheet_name,
+            approved_target_columns=[req.target_column] if req.target_column else [],
+            approved_target_kinds=(
+                {req.target_column: req.target_kind}
+                if req.target_column is not None and req.target_kind is not None
+                else {}
+            ),
+            approved_predictor_columns=req.predictor_columns or [],
+        )
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "code": "invalid_agent_context",
+                "message": str(exc),
+                "recoverable": True,
+            },
+        ) from exc
+    agent = run_local_investigation(
+        req.question,
+        context,
+        language=req.language,
+        model=req.model,
+    )
+    return {
+        "schema_version": "agent-api.v1",
+        "status": agent["status"],
+        "mode": "agent",
+        "file_path": req.file_path,
+        "selected_sheet": req.sheet_name,
+        "dataset": {
+            "rows": profile["rows"],
+            "columns": profile["columns"],
+            "total_missing_cells": profile["total_missing_cells"],
+            "missing_cell_pct": profile["missing_cell_pct"],
+            "exact_duplicate_copies": profile["duplicate_rows"],
+            "schema": profile["schema"],
+        },
+        "dashboard": build_quick_dashboard(profile),
+        "agent": agent,
+    }
 
 
 def _verified_analyst_report_response(

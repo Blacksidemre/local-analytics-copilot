@@ -403,7 +403,10 @@ def _detect_excel_header(worksheet: Any) -> int:
         for next_index in range(row_index + 1, min(row_index + 6, max_rows + 1)):
             following = _row_values(worksheet, next_index, max_columns)
             filled = sum(bool(value is not None and str(value).strip()) for value in following)
-            next_fill.append(filled / max(len(values), 1))
+            # Compare all candidates against the worksheet width.  Using the
+            # trimmed candidate-row width can give data rows a score above 1.0
+            # and incorrectly select them as the header.
+            next_fill.append(filled / max(max_columns, 1))
         continuation = statistics.median(next_fill) if next_fill else 0.0
         score = uniqueness * 3.0 + text_ratio * 1.4 + continuation * 4.0
         score += min(len(nonempty), 30) * 0.04

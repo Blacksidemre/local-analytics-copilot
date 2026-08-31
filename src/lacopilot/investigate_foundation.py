@@ -12,6 +12,11 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 
 from lacopilot.analyst_pipeline import run_analyst_pipeline, verify_analyst_payload
 from lacopilot.config import get_settings
+from lacopilot.investigate_tools import (
+    BOUNDED_TOOL_NAMES,
+    execute_bounded_tool,
+    verify_bounded_tool_result,
+)
 from lacopilot.security import resolve_workspace_path
 from lacopilot.tools.data_tools import profile_dataset
 
@@ -100,7 +105,15 @@ _FORBIDDEN_RESULT_KEYS = {
     "sample_rows",
 }
 
-CompletionCriterion = Literal["profile_verified", "target_screen_verified"]
+CompletionCriterion = Literal[
+    "profile_verified",
+    "target_screen_verified",
+    "description_verified",
+    "frequency_verified",
+    "aggregation_verified",
+    "trend_verified",
+    "outlier_screen_verified",
+]
 TargetKind = Literal["binary", "continuous", "categorical"]
 PredictorSelection = Literal["deterministic_role_filter", "explicit_user"]
 
@@ -183,6 +196,58 @@ class TargetAssociationArguments(StrictModel):
         return self
 
 
+class ColumnListArguments(StrictModel):
+    columns: list[str] = Field(min_length=1, max_length=10)
+
+    @field_validator("columns")
+    @classmethod
+    def columns_must_be_unique(cls, value: list[str]) -> list[str]:
+        if len(value) != len(set(value)):
+            raise ValueError("columns tekrar eden sütun içeremez")
+        return value
+
+
+class CategoricalFrequencyArguments(StrictModel):
+    column: str = Field(min_length=1, max_length=256)
+    top_n: int = Field(default=10, ge=1, le=20)
+
+
+class MissingFilter(StrictModel):
+    column: str = Field(min_length=1, max_length=256)
+    operator: Literal["is_missing", "not_missing"]
+
+
+class SegmentAggregationArguments(StrictModel):
+    group_column: str = Field(min_length=1, max_length=256)
+    metric_column: str | None = Field(default=None, min_length=1, max_length=256)
+    aggregation: Literal["count", "sum", "mean", "median", "min", "max"]
+    filters: list[MissingFilter] = Field(default_factory=list, max_length=3)
+    max_groups: int = Field(default=10, ge=1, le=20)
+
+    @model_validator(mode="after")
+    def aggregation_contract(self) -> SegmentAggregationArguments:
+        if self.aggregation != "count" and self.metric_column is None:
+            raise ValueError("Numeric aggregation metric_column gerektirir")
+        signatures = [(item.column, item.operator) for item in self.filters]
+        if len(signatures) != len(set(signatures)):
+            raise ValueError("filters tekrar eden koşul içeremez")
+        return self
+
+
+class TimeTrendArguments(StrictModel):
+    date_column: str = Field(min_length=1, max_length=256)
+    metric_column: str | None = Field(default=None, min_length=1, max_length=256)
+    aggregation: Literal["count", "sum", "mean", "median"]
+    frequency: Literal["day", "week", "month"] = "month"
+    max_periods: int = Field(default=24, ge=2, le=36)
+
+    @model_validator(mode="after")
+    def trend_contract(self) -> TimeTrendArguments:
+        if self.aggregation != "count" and self.metric_column is None:
+            raise ValueError("Numeric trend aggregation metric_column gerektirir")
+        return self
+
+
 class StepBase(StrictModel):
     step_id: str = Field(min_length=1, max_length=48)
     purpose: str = Field(min_length=1, max_length=500)
@@ -206,8 +271,39 @@ class TargetAssociationStep(StepBase):
     arguments: TargetAssociationArguments
 
 
+class DescribeColumnsStep(StepBase):
+    tool: Literal["describe_columns"]
+    arguments: ColumnListArguments
+
+
+class CategoricalFrequencyStep(StepBase):
+    tool: Literal["categorical_frequency"]
+    arguments: CategoricalFrequencyArguments
+
+
+class SegmentAggregationStep(StepBase):
+    tool: Literal["aggregate_by_segment"]
+    arguments: SegmentAggregationArguments
+
+
+class TimeTrendStep(StepBase):
+    tool: Literal["analyze_time_trend"]
+    arguments: TimeTrendArguments
+
+
+class OutlierScreenStep(StepBase):
+    tool: Literal["screen_outliers"]
+    arguments: ColumnListArguments
+
+
 InvestigateStep = Annotated[
-    ProfileStep | TargetAssociationStep,
+    ProfileStep
+    | TargetAssociationStep
+    | DescribeColumnsStep
+    | CategoricalFrequencyStep
+    | SegmentAggregationStep
+    | TimeTrendStep
+    | OutlierScreenStep,
     Field(discriminator="tool"),
 ]
 
@@ -220,7 +316,7 @@ class InvestigatePlan(StrictModel):
     approved_target_columns: list[str] = Field(default_factory=list, max_length=5)
     approved_target_kinds: dict[str, TargetKind] = Field(default_factory=dict, max_length=5)
     approved_predictor_columns: list[str] = Field(default_factory=list, max_length=20)
-    completion_criteria: list[CompletionCriterion] = Field(min_length=1, max_length=2)
+    completion_criteria: list[CompletionCriterion] = Field(min_length=1, max_length=6)
     steps: list[InvestigateStep] = Field(min_length=1, max_length=6)
 
     @field_validator("dataset_ref")
@@ -260,28 +356,31 @@ class InvestigatePlan(StrictModel):
             if isinstance(step, ProfileStep):
                 produced.add("profile_verified")
                 continue
-
-            produced.add("target_screen_verified")
-            arguments = step.arguments
-            if arguments.target_column not in self.approved_target_columns:
-                raise ValueError(
-                    f"hedef sütun kullanıcı tarafından onaylanmamış: {arguments.target_column}"
-                )
-            approved_kind = self.approved_target_kinds.get(arguments.target_column)
-            if arguments.target_kind != approved_kind:
-                raise ValueError(
-                    "target_kind kullanıcı/deterministik context ile onaylanmamış: "
-                    f"{arguments.target_column}"
-                )
-            if arguments.predictor_selection == "explicit_user":
-                unknown_predictors = sorted(
-                    set(arguments.predictor_columns or []) - set(self.approved_predictor_columns)
-                )
-                if unknown_predictors:
+            if isinstance(step, TargetAssociationStep):
+                produced.add("target_screen_verified")
+                arguments = step.arguments
+                if arguments.target_column not in self.approved_target_columns:
                     raise ValueError(
-                        "predictor sütunları kullanıcı tarafından onaylanmamış: "
-                        f"{unknown_predictors}"
+                        f"hedef sütun kullanıcı tarafından onaylanmamış: {arguments.target_column}"
                     )
+                approved_kind = self.approved_target_kinds.get(arguments.target_column)
+                if arguments.target_kind != approved_kind:
+                    raise ValueError(
+                        "target_kind kullanıcı/deterministik context ile onaylanmamış: "
+                        f"{arguments.target_column}"
+                    )
+                if arguments.predictor_selection == "explicit_user":
+                    unknown_predictors = sorted(
+                        set(arguments.predictor_columns or [])
+                        - set(self.approved_predictor_columns)
+                    )
+                    if unknown_predictors:
+                        raise ValueError(
+                            "predictor sütunları kullanıcı tarafından onaylanmamış: "
+                            f"{unknown_predictors}"
+                        )
+                continue
+            produced.add(_criterion_for(step))
 
         missing_producers = sorted(set(self.completion_criteria) - produced)
         if missing_producers:
@@ -299,10 +398,12 @@ def build_local_planner_messages(
         raise ValueError("user_request 4000 karakter sınırını aşıyor")
     system = (
         "You are a local analytics planner. Return one JSON object matching the supplied schema. "
-        "Use only the two allowlisted typed tools. Never calculate a number, invent a KPI or "
+        "Use only the allowlisted typed analytics tools in the schema. Never calculate a number, invent a KPI or "
         "business meaning, infer an unapproved target, request Python/shell/SQL, or include raw "
-        "rows. Use deterministic_role_filter unless predictors were explicitly approved. Keep "
-        "the plan at six steps or fewer. The executor, not you, produces every numeric fact."
+        "rows. Filters may only test missing/not-missing; never invent a threshold or category. "
+        "Use deterministic_role_filter unless predictors were explicitly approved. Prefer profile, "
+        "then the smallest relevant aggregation/description/trend/outlier/association tool chain. "
+        "Keep the plan at six steps or fewer. The executor, not you, produces every numeric fact."
     )
     user_payload = {
         "request": user_request,
@@ -406,9 +507,25 @@ def _target_association_tool(
     }
 
 
+def _bounded_tool(plan: InvestigatePlan, step: InvestigateStep) -> dict[str, Any]:
+    if step.tool not in BOUNDED_TOOL_NAMES:  # pragma: no cover - registry invariant
+        raise TypeError("Bounded tool step gerektirir")
+    return execute_bounded_tool(
+        step.tool,
+        plan.dataset_ref,
+        plan.sheet_name,
+        step.arguments.model_dump(mode="json"),
+    )
+
+
 DEFAULT_TOOL_REGISTRY: dict[str, ToolHandler] = {
     "profile_dataset": _profile_tool,
     "screen_target_associations": _target_association_tool,
+    "describe_columns": _bounded_tool,
+    "categorical_frequency": _bounded_tool,
+    "aggregate_by_segment": _bounded_tool,
+    "analyze_time_trend": _bounded_tool,
+    "screen_outliers": _bounded_tool,
 }
 
 
@@ -652,6 +769,9 @@ def verify_tool_result(tool: str, result: dict[str, Any]) -> dict[str, Any]:
         kpis = result.get("kpi_selection", {})
         if kpis.get("status") != "requires_approved_definition" or kpis.get("selected"):
             errors.append({"code": "unsupported_kpi_selection", "message": "kpi"})
+    elif tool in BOUNDED_TOOL_NAMES:
+        bounded_verification = verify_bounded_tool_result(tool, result)
+        errors.extend(bounded_verification["errors"])
     else:
         errors.append({"code": "tool_not_allowlisted", "message": tool})
     return {
@@ -662,7 +782,16 @@ def verify_tool_result(tool: str, result: dict[str, Any]) -> dict[str, Any]:
 
 
 def _criterion_for(step: InvestigateStep) -> CompletionCriterion:
-    return "profile_verified" if isinstance(step, ProfileStep) else "target_screen_verified"
+    criteria: dict[str, CompletionCriterion] = {
+        "profile_dataset": "profile_verified",
+        "screen_target_associations": "target_screen_verified",
+        "describe_columns": "description_verified",
+        "categorical_frequency": "frequency_verified",
+        "aggregate_by_segment": "aggregation_verified",
+        "analyze_time_trend": "trend_verified",
+        "screen_outliers": "outlier_screen_verified",
+    }
+    return criteria[step.tool]
 
 
 def _select_synthesis_evidence(
@@ -709,6 +838,13 @@ def _select_synthesis_evidence(
                 continue
             for role in ("effect", "p_value", "adjusted_p_value", "n"):
                 select(analysis.get("finding_ids", {}).get(role))
+
+    for event in events:
+        if event.get("status") != "completed" or event.get("tool") not in BOUNDED_TOOL_NAMES:
+            continue
+        for finding in event.get("result", {}).get("findings", []):
+            if isinstance(finding, dict):
+                select(finding.get("finding_id"))
 
     if not selected_ids:
         for finding_id in sorted(evidence_index):

@@ -47,6 +47,32 @@ def safe_excel_writer(path: Path) -> pd.ExcelWriter:
     )
 
 
+def parse_datetime_series(series: pd.Series) -> pd.Series:
+    """Parse dates without treating ISO year-first values as day-first dates."""
+    if pd.api.types.is_datetime64_any_dtype(series):
+        return pd.to_datetime(series, errors="coerce")
+
+    text = series.astype("string").str.strip()
+    iso_mask = text.str.match(r"^\d{4}[-/]\d{1,2}[-/]\d{1,2}(?:\D|$)", na=False)
+    parsed = pd.Series(pd.NaT, index=series.index, dtype="datetime64[ns]")
+    if iso_mask.any():
+        parsed.loc[iso_mask] = pd.to_datetime(
+            text.loc[iso_mask],
+            errors="coerce",
+            format="mixed",
+            yearfirst=True,
+            dayfirst=False,
+        )
+    if (~iso_mask).any():
+        parsed.loc[~iso_mask] = pd.to_datetime(
+            text.loc[~iso_mask],
+            errors="coerce",
+            format="mixed",
+            dayfirst=True,
+        )
+    return parsed
+
+
 def serializable(value: Any):
     if hasattr(value, "item"):
         try:
@@ -98,9 +124,7 @@ def infer_column_roles(df: pd.DataFrame) -> dict[str, list[str]]:
         unique = nonnull.nunique()
         unique_ratio = unique / row_count
         if len(nonnull) and any(key in name.lower() for key in ["date", "tarih", "time", "zaman"]):
-            parsed = pd.to_datetime(
-                nonnull.head(500), errors="coerce", format="mixed", dayfirst=True
-            )
+            parsed = parse_datetime_series(nonnull.head(500))
             if parsed.notna().mean() > 0.8:
                 roles["datetime"].append(name)
                 continue

@@ -13,6 +13,7 @@ from lacopilot.security import resolve_workspace_path
 from lacopilot.tools.common import (
     infer_column_roles,
     load_table,
+    parse_datetime_series,
     safe_excel_writer,
     safe_output_path,
     serializable,
@@ -139,7 +140,7 @@ def profile_dataset(file_path: str, sheet_name: str = "0") -> dict:
         categorical_summary[col] = {str(k): int(v) for k, v in vc.items()}
     date_ranges = {}
     for col in roles["datetime"][:100]:
-        parsed = pd.to_datetime(df[col], errors="coerce", format="mixed", dayfirst=True)
+        parsed = parse_datetime_series(df[col])
         valid = parsed.dropna()
         if len(valid):
             date_ranges[col] = {
