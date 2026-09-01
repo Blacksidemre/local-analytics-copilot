@@ -14,9 +14,11 @@ Release status: **pre-release — physical Windows acceptance pending**
   branch pull requests; no direct protected-branch write was used.
 - Promotion method: normal merge commit; no force push, history rewrite or direct ruleset bypass.
 - Release acceptance was promoted through protected-branch PR #8 using a normal merge commit.
-- Current promoted `main` checkpoint: `b392134964147e8f074ca38cdbc6b3a8232bf00e`.
+- Release-acceptance product checkpoint on `main`: `b392134964147e8f074ca38cdbc6b3a8232bf00e`.
 - PR GitHub Actions Run 40 and main GitHub Actions Run 41 each passed all five required jobs.
 - Release-acceptance integration checkpoint: `e7e39003b7fd45b3e755f279eeef3108ede729f7`.
+- The protected GitHub `main` ref and its latest required CI run are authoritative for later
+  handoff-only merge commits; this document intentionally does not self-reference its own merge SHA.
 - The old `Blacksidemre/hermetic` repository is historical/reference only. It is not a runtime,
   build or package dependency and receives no new product work.
 - `achalp/hermetic` remains read-only; no PR, issue or write was sent upstream.
