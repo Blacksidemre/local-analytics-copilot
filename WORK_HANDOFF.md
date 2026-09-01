@@ -11,6 +11,9 @@ Protected branches: `main` and upstream `achalp/hermetic` were not changed
 
 - Canonical single-repository consolidation checkpoint: `64c709d` on
   `Blacksidemre/local-analytics-copilot:hermetic-hybrid-integration`.
+- Verified Agent evidence-report checkpoint: `d270d4a`.
+- Current CI-green product checkpoint: `3a29916`; GitHub Actions CI Run 26 completed successfully
+  with all five jobs passing.
 - Historical Hermetic UI checkpoint: `3fe0afb` on
   `Blacksidemre/hermetic:lac-data-bridge-integration`.
 - The canonical repository tree was verified byte-for-byte against the locally tested tree before
@@ -148,6 +151,14 @@ Python sdist/wheel + dependency check:
 
 git diff --check:
   PASS
+
+GitHub Actions CI Run 26 on 3a29916:
+  PASS (5/5 jobs)
+  Linux Python 3.11 + 3.12
+  Windows Python smoke + privacy check
+  Desktop contracts + production build
+  Windows Tauri cargo check
+  Packaged Windows backend executable + health smoke
 ```
 
 The transient Linux environment's installed `polars` and `duckdb` native modules terminate with a
@@ -164,20 +175,18 @@ workspace because one unrelated cloud-credential test attempted to contact
 CI-selected bridge, Agent UI, proxy, launcher and offline-build tests all passed without network
 access.
 
-Rust/Cargo and PyInstaller are not installed in this Linux workspace. Windows CI therefore owns
-the Rust `cargo check --locked`, packaged-backend build and executable health smoke. This is not a
-claim that the final installed Tauri application passed on the user's physical Windows machine.
+Rust/Cargo and PyInstaller are not installed in this Linux workspace. GitHub's Windows runner
+successfully completed `cargo check --locked`, built the packaged backend and passed its executable
+health smoke on `3a29916`. This is still not a claim that the final installed Tauri application
+passed on the user's physical Windows machine.
 
 ## Remaining release blockers
 
-1. GitHub Actions must run on a normal authenticated push or manual `workflow_dispatch`. Commits
-   published through the connected GitHub App were verified on the branch but did not emit a
-   workflow run, so CI is **not claimed green** for the final checkpoint.
-2. Run one real local-Ollama Agent request on controlled CSV and XLSX and confirm verified output.
-3. Install Visual Studio Build Tools (`Desktop development with C++`, MSVC and Windows SDK) and
+1. Run one real local-Ollama Agent request on controlled CSV and XLSX and confirm verified output.
+2. Install Visual Studio Build Tools (`Desktop development with C++`, MSVC and Windows SDK) and
    complete the physical `pnpm desktop:dev` Tauri acceptance.
-4. Build and test the Windows installer/package on the physical target machine.
-5. Add fuller history/project comparison UX before stable v1.0 if it is considered a release
+3. Build and test the Windows installer/package on the physical target machine.
+4. Add fuller history/project comparison UX before stable v1.0 if it is considered a release
    requirement rather than post-v1 scope.
 
 ## Minimum later Windows acceptance
