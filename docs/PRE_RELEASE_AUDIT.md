@@ -1,62 +1,55 @@
-# Pre-release Audit — 1.0.0rc1
+# Pre-release Audit — Canonical Local Analytics Copilot
 
-Audit date: 2026-08-29
+Audit date: 2026-09-01
 
 ## Decision
 
-The existing deterministic analytics core is suitable for hardening; a full rewrite is not justified.
-The first GitHub milestone is a release candidate, not a stable/final release.
+The consolidated product is suitable for continued pre-release acceptance. The canonical source is
+`Blacksidemre/local-analytics-copilot`; the old Hermetic fork is historical/reference only.
 
-## Verified release gate
+This audit does **not** approve stable `v1.0.0`, claim production readiness, or certify the physical
+Windows installer path.
 
-- SHA-256 and ZIP integrity of the inherited source package were verified before editing.
-- Editable installation succeeds on Python 3.12.
-- `ruff format --check .` passes.
-- `ruff check .` passes.
-- Python source compilation passes.
-- 35 automated tests pass.
-- Measured source coverage is 61.83%.
-- Wheel and source-distribution builds pass.
-- The built wheel installs into a fresh virtual environment; CLI, packaged defaults and health/privacy
-  smoke checks pass without using the source tree.
-- `pip check` reports no broken installed requirements.
-- FastAPI health, API-token enforcement, security headers and exact-action approval were exercised.
-- Deterministic CSV, DuckDB, Excel, statistics, business and NPL paths were exercised.
+## Verified repository gates
 
-## Security findings closed for RC1
+- `main` was promoted through its protected-branch pull-request ruleset without force push or
+  history rewrite.
+- The promoted tree is identical to the reviewed `hermetic-hybrid-integration` tree.
+- GitHub Actions validates Linux Python 3.11/3.12, Windows Python/privacy, desktop contracts,
+  production Next build, Windows Tauri `cargo check --locked`, packaged backend build and executable
+  health smoke.
+- Canonical source, launchers, analytics backend, Agent, history and UI live in one repository.
+- No runtime/package dependency on `Blacksidemre/hermetic` or `achalp/hermetic` remains.
+- Root MIT, Hermetic-derived MIT, vendored Apache-2.0 and font attribution files are retained.
+- Production secret-pattern and tracked credential/private-data filename scans are clean.
 
-- Dataset SQL can no longer call DuckDB file/network scanners or query arbitrary tables.
-- SQL validation uses an AST parser and rejects multiple statements, DML and DDL.
-- Agent-requested workspace writes and web calls are queued for human approval.
-- Approval executes the stored tool name and exact canonical arguments once.
-- Remote Ollama endpoints and cloud model tags are blocked by default.
-- Non-loopback UI binding requires an explicit opt-in and an API token.
-- Excel string-to-formula and string-to-URL conversion is disabled.
-- Output helpers avoid silently overwriting prior reports.
-- Workspace knowledge files, SQLite state, logs and outputs are excluded from Git.
-- Audit payloads redact common token/PII patterns and cap logged strings.
-- Retrieved documents and tool content are explicitly treated as untrusted prompt data.
+## Verified product gates
 
-## Correctness findings closed for RC1
+- Milestone 1: deterministic CSV/XLSX ingestion and Quick profile — PASS.
+- Milestone 2: Analyst statistics, typed findings, verifier and Excel/HTML/PDF reports — PASS.
+- Milestone 3: bounded local Agent — PARTIAL.
+- Agent planner has typed/allowlisted tools, tool/failure budgets, duplicate-call/loop guards and
+  deterministic evidence verification.
+- Unsupported numeric, business/KPI, causality and prediction claims fail closed.
+- Verified Agent Excel/HTML/PDF reports share one archived evidence manifest and SHA-256 binding.
+- Local history stores bounded verifier-passed evidence without raw rows, prompts or secrets.
+- Local history UI lists, opens and explicitly deletes runs; two verifier-passed manifests can be
+  compared without reopening raw data or inferring period/business meaning.
 
-- Unequal-variance normal groups route to Welch ANOVA instead of classical ANOVA.
-- PCA/clustering/ML/bootstrap/Monte Carlo edge inputs are validated.
-- Vintage analysis honors the portfolio dimension.
-- Roll-rate analysis reports optional balance-weighted migrations.
-- Valuation scenarios reject invalid rates/prices and bound scenario grids.
-- Funnel zero-denominator, empty RFM and negative Pareto inputs are handled explicitly.
+## Physical acceptance still required
 
-## Target-machine checks still required
+1. Run a real local-Ollama Agent request against controlled CSV and XLSX on the target Windows PC.
+2. Install Visual Studio Build Tools with Desktop development with C++, MSVC and Windows SDK.
+3. Run the physical Tauri path and confirm upload, Agent, verifier, report download and shutdown.
+4. Build the Windows installer and validate clean install, launch, upgrade and uninstall.
 
-These cannot be certified in the Linux build environment:
+Until these pass, repository and UI wording must remain **pre-release / physical Windows acceptance
+pending**.
 
-- Windows 11 installation through `scripts/install_windows.ps1`.
-- RTX 5070 Ti VRAM/RAM use and tokens/second.
-- `qwen3.5:9b` and optional `gpt-oss:20b` tool-call reliability through real Ollama.
-- Native Microsoft Excel COM PivotTable creation.
-- Live PostgreSQL/SQL Server behavior using genuinely read-only accounts.
-- Optional OCR/Tesseract.
-- OpenClaw provider configuration and end-to-end action approval.
+## Known environment limitation
 
-Stable `v1.0.0` should not be tagged until the target-machine checklist passes and discovered issues are
-triaged. See `docs/FINAL_HANDOFF.md` for the run order.
+The managed Linux development environment may terminate in two native Polars/DuckDB execution tests
+with a CPU `Bus error`. This is documented rather than hidden; clean GitHub Linux and Windows runners
+execute the full suite and are the authoritative regression gate.
+
+See [`RELEASE_CHECKLIST.md`](RELEASE_CHECKLIST.md) and root [`WORK_HANDOFF.md`](../WORK_HANDOFF.md).

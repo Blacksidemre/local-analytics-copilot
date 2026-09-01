@@ -74,10 +74,10 @@ const stubSource = (
   pkgName
 ) => `// Injected by scripts/build-mcpb.mjs — see the header there for why.
 const MSG = ${JSON.stringify(
-  `The ${pkgName} warehouse driver is not included in the hermetic Desktop extension ` +
+  `The ${pkgName} warehouse driver is not included in the Local Analytics Copilot Desktop extension ` +
     `(its native bindings cannot ship in a portable bundle). Local files (CSV/Excel/Parquet) ` +
-    `and the bundled warehouse engines work here; for this engine, run hermetic from a full ` +
-    `checkout: https://github.com/achalp/hermetic`
+    `and the bundled warehouse engines work here; for this engine, use the canonical full ` +
+    `checkout: https://github.com/Blacksidemre/local-analytics-copilot`
 )};
 function bomb() { throw new Error(MSG); }
 // Property reads chain freely (module-level destructuring stays lazy);

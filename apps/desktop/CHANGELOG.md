@@ -1,5 +1,9 @@
 # Changelog
 
+> **Historical Hermetic-derived changelog.** Current Local Analytics Copilot release history lives
+> in repository root [`CHANGELOG.md`](../../CHANGELOG.md). The notes below are retained for
+> provenance and do not describe current release readiness.
+
 Release history lives in [`release-notes/`](release-notes/) — dated write-ups
 of each feature wave (March through August: interactive dashboards, warehouse
 connectors, Investigate mode, notebook view, remote Parquet, skills,

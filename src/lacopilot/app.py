@@ -134,6 +134,11 @@ class AgentReportRequest(BaseModel):
     output_name: str | None = Field(default=None, min_length=1, max_length=200)
 
 
+class AnalysisHistoryCompareRequest(BaseModel):
+    baseline_run_id: str = Field(pattern=r"^[0-9a-f]{32}$")
+    current_run_id: str = Field(pattern=r"^[0-9a-f]{32}$")
+
+
 class KnowledgeIngestRequest(BaseModel):
     file_path: str = Field(min_length=1, max_length=1000)
     embed_model: str | None = Field(default=None, max_length=200)
@@ -529,6 +534,30 @@ def analysis_history(limit: int = 50, dataset_id: str | None = None):
         "schema_version": "analysis-history-list.v1",
         "runs": _analysis_history().list_runs(limit=limit, dataset_id=dataset_id),
     }
+
+
+@app.post("/api/v1/analysis/history/compare")
+def compare_analysis_history(req: AnalysisHistoryCompareRequest):
+    try:
+        return _analysis_history().compare_runs(req.baseline_run_id, req.current_run_id)
+    except KeyError as exc:
+        raise HTTPException(
+            status_code=404,
+            detail={
+                "code": "history_run_not_found",
+                "message": "Karşılaştırılacak analiz kayıtlarından biri bulunamadı.",
+                "run_id": str(exc.args[0]),
+            },
+        ) from exc
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "code": "invalid_history_comparison",
+                "message": str(exc),
+                "recoverable": True,
+            },
+        ) from exc
 
 
 @app.get("/api/v1/analysis/history/{run_id}")

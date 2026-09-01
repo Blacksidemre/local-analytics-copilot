@@ -1,399 +1,246 @@
-# Local Analytics Copilot 1.0 RC1
+# Local Analytics Copilot
 
-**Yerel çalışan veri analisti + istatistik mentoru + BI/Excel + NPL copilot.**
+[![CI](https://github.com/Blacksidemre/local-analytics-copilot/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/Blacksidemre/local-analytics-copilot/actions/workflows/ci.yml)
 
-Amaç: hassas dosyaları varsayılan olarak bilgisayarınızda tutarken doğal dille veri inceleme, istatistiksel analiz, iş analizi, SQL, NPL analitiği, Pivot/dashboard/rapor ve şirket içi bilgi bankası kullanımı sağlamak.
+**Şirket verisini dışarı çıkarmadan çalışan, hesapları deterministik araçlarla yapan ve her sayısal
+bulguyu kanıta bağlayan yerel AI veri analisti.**
 
-> LLM planlar ve açıklar. Sayısal hesapları, dosya işlemlerini ve SQL'i deterministik Python/SQL araçları yapar.
+> **Yayın durumu: pre-release — fiziksel Windows kabulü bekleniyor.** `main`, canonical tek-repo
+> ürününü içerir; fakat gerçek Windows Tauri/installer ve canlı yerel Ollama Agent kabulü tamamlanana
+> kadar stable `v1.0.0` yayımlanmayacaktır.
 
-> **Hibrit geliştirme dalı:** `hermetic-hybrid-integration`, Hermetic'in UI/Tauri/artifact
-> katmanını LAC'ın deterministik analitik çekirdeğine bağlayan kontrollü geliştirme hattıdır.
-> `main` bu çalışma sırasında değiştirilmez. Mimari kararlar:
-> [`docs/HYBRID_ARCHITECTURE.md`](docs/HYBRID_ARCHITECTURE.md).
+## Ürün deneyimi
 
-Bu integration dalı artık iki repo gerektirmez: deterministik Python servisleri ve Hermetic'ten
-türetilen web/Tauri arayüzü aynı canonical repo içindedir. Kaynak arayüz
-[`apps/desktop`](apps/desktop) altında, üçüncü taraf lisansları ise
-[`THIRD-PARTY-NOTICES.md`](THIRD-PARTY-NOTICES.md) içinde korunur.
-
-Geliştirici için tek giriş noktaları:
-
-```powershell
-pnpm desktop:install  # yalnız ilk kurulumda
-pnpm dev              # birleşik tarayıcı deneyimi
-pnpm desktop:dev      # native Tauri geliştirme penceresi
+```text
+tek repo → tek uygulama → CSV/XLSX yükle → doğal dilde sor
+         → deterministik analiz → bağımsız doğrulama → dashboard/rapor
 ```
 
-`pnpm dev` ve `pnpm desktop:dev`, LAC backend'i ve arayüzü birlikte yönetir; sabit geliştirici yolu
-kullanmaz ve kendisinin başlatmadığı süreçleri kapatmaz. Kurulu Windows paketi henüz yayınlanmış
-değildir; native Tauri kabulü Visual C++ Build Tools bulunan gerçek Windows makinede tamamlanacaktır.
+LLM hesaplama motoru değildir:
 
-> **Yayın durumu:** Bu sürüm bir release candidate'tır. Linux/Python 3.12 üzerinde lint, paketleme,
-> güvenlik ve deterministik analiz testleri doğrulanmıştır. Windows 11 + RTX 5070 Ti, gerçek Ollama
-> modelleri, Excel COM, canlı veritabanları ve OpenClaw entegrasyonu hedef bilgisayarda ayrıca
-> doğrulanmalıdır. Ayrıntı: `docs/PRE_RELEASE_AUDIT.md`.
+```text
+LLM planlar ve açıklar
+        ↓
+typed/bounded araçlar hesaplar
+        ↓
+verifier kanıtı doğrular
+        ↓
+UI yalnız doğrulanmış sonucu sunar
+```
 
-## İlk kez kuracaklar
+## Üç analiz modu
 
-Teknik bilginiz azsa **[Türkçe Adım Adım Kurulum ve Kullanım Rehberi](docs/KURULUM_VE_KULLANIM_TR.md)**
-ile başlayın. Kısa yol:
+| Mod         | Ne yapar?                                                                                                    |                                                LLM gerekli mi? |
+| ----------- | ------------------------------------------------------------------------------------------------------------ | -------------------------------------------------------------: |
+| **Quick**   | Dosya profili, missing, duplicate copy, kolon rolleri ve güvenli KPI kartları                                |                                         Hayır; yorum opsiyonel |
+| **Analyst** | Hedef seçimi, deterministik istatistik, multiple-testing, effect size, verifier ve rapor                     |                                      Hayır; açıklama opsiyonel |
+| **Agent**   | Yerel Ollama planner ile bounded plan kurar, allowlist typed araçları zincirler ve verified synthesis üretir | Planlama için evet; model yoksa güvenli deterministik fallback |
 
-1. Python 3.12 ve Ollama'yı kurun.
-2. Repoyu ZIP olarak indirin ve klasöre çıkarın.
-3. İlk kurulum için `.\scripts\install_windows.ps1` çalıştırın; `qwen3.5:9b` sorusuna `E`,
-   ağır model sorusuna ilk kurulumda `H` deyin.
-4. Sonraki açılışlarda `Start_Local_Analytics_Copilot.cmd` dosyasına çift tıklayın. Launcher
-   Ollama, Docker, backend ve birleşik arayüz durumunu kontrol eder; gereken yerel süreçleri
-   başlatıp uygulamayı açar.
+Quick ve Analyst, Ollama çalışmasa da sayısal analiz üretebilir. Model çıktısı verifier'dan geçmezse
+güvenilir sonuç gibi gösterilmez.
 
-`python` Windows aliası çalışmıyorsa kurucu otomatik olarak `py -3.12`, `py -3.13` ve
-`py -3.11` seçeneklerini dener.
+## Mevcut özellikler
 
-## Zorunlu ücret var mı?
-**Hayır.** Varsayılan kurulum Ollama + yerel açık modeller + Python kütüphaneleridir. Ücretli OpenAI/Anthropic API anahtarı gerekmez. İnternet araştırması opsiyoneldir ve varsayılan olarak kapalıdır.
+### Dosya alımı ve veri kalitesi
 
-## Önerilen donanım profili
-Bu repo özellikle **RTX 5070 Ti 16 GB VRAM + 32 GB RAM** sınıfı bir Windows makine düşünülerek ayarlanmıştır.
+- CSV encoding, delimiter, decimal, quote ve malformed-row kontrolü
+- XLSX/XLSM sheet discovery, sheet selection ve header detection
+- ZIP/XML tabanlı Excel arşiv güvenlik sınırları
+- CSV/XLSX aynı typed ingestion ve finding sözleşmesi
+- Satır/sütun, missing, exact duplicate copy, unique count, tarih aralığı ve schema profili
+- Kaynak dosyayı değiştirmeyen çalışma alanı
 
-- Fast/Main: `qwen3.5:9b`
-- Deep review/reasoning: `gpt-oss:20b` (opsiyonel)
-- Başlangıç context: `32768`
+### Deterministik analitik
 
-Gerçek hız ve tool-calling güvenilirliğini kendi bilgisayarınızda `lac benchmark-models` ile ölçün.
+- Numeric descriptive statistics ve categorical frequency
+- Group/segment aggregation ve filtered aggregation
+- Target-aware association screening
+- Uygun parametrik/non-parametrik testler, effect size ve multiple-testing adjustment
+- Outlier screening, correlation/association ve time trend
+- Genel iş analitiği ile NPL/risk analiz çekirdeği
 
-## Ana özellikler
+### Bounded local Agent
 
-### Yerel AI / Agent
-- Native Ollama `/api/chat` tool calling
-- Fast / Main / Deep model modları
-- Çok turlu tool loop + tur/context/result limitleri
-- Sohbet geçmişi yerel SQLite'ta
-- Model bulunamazsa güvenli fallback
-- OpenClaw entegrasyonu opsiyonel; çekirdek ona bağımlı değil
+```text
+user request → local Ollama planner → typed plan → deterministic tools
+             → evidence manifest → verifier → bounded synthesis
+```
 
-### Kişilik & Mentor
-- Mentor / Senior Analyst / Executive / Technical profilleri
-- Kendi kişiliğinizi UI/API/YAML ile düzenleme
-- Öğrenme seviyesi yerel profili
-- “neden bu yöntem?” yaklaşımı
-- Düz anlatım -> sonuç -> iş anlamı -> isteğe bağlı teknik detay
+Agent en fazla altı adımlık plan kullanır; failure budget, duplicate-call guard, dependency kontrolü
+ve loop detection uygular. Planner'a raw dataset dökümü yerine schema, bounded profile, metadata ve
+aggregate evidence verilir.
 
-### Data Quality / ETL
-- Deterministik CSV encoding/delimiter/decimal/quote algılama
-- XLSX/XLSM sheet discovery ve header detection
-- CSV/XLSX/XLSM/Parquet inceleme; bozuk dosyada kullanıcı dostu ve görünür hata
-- Eksik veri, duplicate, constant kolon, schema drift
-- IQR + robust Z outlier flag
-- Açık data-quality kuralları
-- Kaynağı değiştirmeden cleaning plan
-- Lokal sentetik test verisi üretimi (formal privacy garantisi değildir)
-- DuckDB ile dataset üzerinde read-only SQL
+Agent şunları yapamaz:
 
-### İstatistik / Data Science
-- Descriptive statistics + CI
-- Welch t / Mann-Whitney
-- Paired t / Wilcoxon
-- One-way ANOVA / Welch ANOVA / Kruskal-Wallis + uygun olduğunda Tukey
-- Chi-square / Fisher + Cramer's V
-- Pearson / Spearman / Kendall
-- Bootstrap CI
-- Linear regression + VIF/Breusch-Pagan
-- Logistic regression + Odds Ratio
-- PCA
-- K-Means + silhouette
-- Isolation Forest
-- Dataset drift
-- Holt-Winters forecast + holdout backtest
-- Kaplan-Meier survival
-- Cross-validated Random Forest baseline + permutation importance
-- Monte Carlo NPV
+- arbitrary Python, shell, PowerShell veya SQL çalıştırmak
+- keyfi filesystem erişimi veya başka dosyaları okumak
+- internet/cloud exfiltration başlatmak
+- raw-row dump üretmek
+- sahte `finding_id` veya evidence kullanmak
+- kanıtsız sayı, KPI anlamı, benchmark veya business semantics uydurmak
+- association sonucunu causality/prediction olarak sunmak
 
-### Genel İş Analitiği
-- Pareto / ABC
-- Contribution / variance contribution
-- Funnel
-- Generic cohort
-- RFM
-- Break-even / target-profit
+Beklenmeyen durumda davranış **fail closed** olur.
 
-### BI / Excel / Dashboard
-- Pivot/aggregation Excel çıktısı
-- Executive Excel dashboard
-- Offline self-contained Plotly HTML dashboard
-- PDF summary formatter
-- Deterministik dataset review workflow
+### Verifier, evidence ve raporlar
 
-### NPL / Varlık Yönetimi
-- Portfolio summary
-- DPD aging
-- Debtor concentration / HHI
-- Vintage curves
-- Roll-rate / migration matrix
-- Actual vs Target
-- NPV / MOIC single & multi-scenario
-- Monte Carlo valuation
+- Her authoritative sayı stable `finding_id` ve deterministic source taşır.
+- Quick, Analyst ve Agent açıklamaları supplied evidence dışına çıkamaz.
+- Verifier başarısızsa model metni güvenilir sonuç olarak yayımlanmaz.
+- Excel, self-contained HTML ve PDF raporları aynı verified finding manifestini kullanır.
+- Agent raporlarının üç formatı aynı SHA-256 binding ve aynı sayısal değerleri taşır.
+- Ham satırlar ve doğrulanmamış model prose'u verified Agent raporlarına girmez.
+- Üretilen dosyalar yeniden açılıp yapı, evidence, link/script ve formül hataları açısından kontrol edilir.
 
-### SQL / ERP
-- PostgreSQL / SQL Server bağlantı profili altyapısı
-- Schema catalog / table description
-- Read-only query guard
-- Query row caps + local audit
-- Gerçek güvenlik için read-only DB hesabı zorunlu öneri
+### Yerel geçmiş
 
-### Local RAG / Oryantasyon
-- PDF/DOCX/TXT/MD/CSV/XLSX bilgi bankası
-- SQLite FTS5
-- Opsiyonel Ollama embeddings ile hybrid search
-- Kaynak path + chunk bilgisini modele verir
-- Şirket KPI/iş kurallarını uydurmama guardrail'i
+Verifier-passed Agent çalışmaları yerel SQLite history store'a kaydedilebilir; listelenebilir,
+açılabilir ve silinebilir. Saklanan içerik dataset-local fingerprint, istek özeti, kullanılan araçlar
+ve bounded verified findings ile sınırlıdır.
 
-### Kontrollü öğrenme / hafıza
-- Agent yalnızca **candidate** rule/memory önerebilir
-- Onayı yalnızca insan UI/API/CLI ile verir
-- Tekrarlanan tool akışlarından reusable workflow adayı çıkarır
-- Learning profile açıklama derinliğini adapte etmek için kullanılır
+Raw rows, model promptları/tool argümanları, secrets ve doğrulanmamış model metni otomatik saklanmaz.
+Geçmiş bulgu yeni analizde otomatik gerçek kabul edilmez.
 
-### Güvenlik
-- Workspace sandbox
-- Web varsayılan kapalı
-- Uzak Ollama ve `:cloud` model etiketleri varsayılan kapalı
-- PII-benzeri web sorgusu blokları
-- AST tabanlı read-only SQL ve DuckDB dış dosya erişim engeli
-- Workspace yazımı ve dış ağ çağrıları için gerçek insan onay kuyruğu
-- Excel formula/URL injection koruması ve çıktıların üzerine yazmama
-- Opsiyonel API token
-- Audit JSONL
-- Token olmadan ağ arayüzüne bind etmeyi reddetme
+İki doğrulanmış çalışma UI'dan seçilerek karşılaştırılabilir. Sistem yalnız aynı `finding_id`, unit,
+deterministic source ve dimension sözleşmesine sahip değerler için mutlak/oransal fark hesaplar;
+eklenen, kaldırılan ve karşılaştırılamayan bulguları ayrı gösterir. Dönem veya iş anlamı otomatik
+varsayılmaz: kullanıcı hangi kaydın önceki, hangisinin yeni olduğunu seçer.
 
----
+## Local-first / offline-first
 
-# Windows Kurulum
+- Varsayılan model motoru yerel Ollama'dır; ücretli cloud API zorunlu değildir.
+- Servisler loopback (`127.0.0.1`) üzerinde çalışır.
+- Remote Ollama, cloud model etiketi ve web erişimi varsayılan kapalıdır.
+- API token etkinse tüm `/api/` rotaları korunur.
+- Dataset işlemleri workspace sınırları içinde kalır.
+- SQL katmanı read-only AST guard ve DuckDB dış-dosya engelleri kullanır.
+- Excel formula/URL injection ve rapor path traversal girişimleri reddedilir.
+- Model veya Ollama yoksa deterministik Quick/Analyst çalışmaya devam eder.
 
-## 1. Ön koşullar
-- Windows 11
-- Python 3.11+
-- Ollama
-- NVIDIA sürücüsü
+İlk bağımlılık/model indirmeleri internet gerektirir. Kurulum ve seçilen Ollama modeli hazır olduğunda
+yerel dosya analizi normal koşullarda çevrimdışı çalışabilir. Ayrıntılar:
+[`docs/PRIVACY_AND_SECURITY.md`](docs/PRIVACY_AND_SECURITY.md).
 
-SQL Server kullanacaksanız ayrıca uygun Microsoft ODBC Driver gerekir.
+## Tek canonical repository
 
-## 2. PowerShell
+Canonical kaynak yalnızca bu repodur:
+
+```text
+local-analytics-copilot/
+├── apps/desktop/          # Hermetic-derived Next.js + Tauri ürün kabuğu
+├── src/lacopilot/         # ingestion, analytics, Agent, verifier, reports, history
+├── scripts/               # tek launcher ve paketleme girişleri
+├── tests/                 # Python/integration/adversarial regression
+├── docs/                  # mimari, güvenlik ve release belgeleri
+└── workspace/             # yerel veri/çıktı sınırı; kullanıcı içeriği Git'e girmez
+```
+
+Eski `Blacksidemre/hermetic` repo yalnız historical/reference kaynaktır. Çalıştırma, build veya
+paket çözümleme sırasında ona ihtiyaç yoktur. Hermetic'ten türetilen kaynak ve lisanslar
+`apps/desktop` altında korunur.
+
+## Windows ve geliştirici kurulumu
+
+Ön koşullar:
+
+- Windows 11, Linux veya macOS
+- Python 3.11–3.13 (önerilen: 3.12)
+- Node.js 22 veya 24
+- pnpm 10.18.1
+- AI yorum/Agent için Ollama ve seçilmiş yerel model
+
+Windows hızlı başlangıç:
 
 ```powershell
+git clone https://github.com/Blacksidemre/local-analytics-copilot.git
+cd local-analytics-copilot
 Set-ExecutionPolicy -Scope Process Bypass
 .\scripts\install_windows.ps1
+pnpm desktop:install
+pnpm dev
 ```
 
-Kurulum size modelleri indirmek isteyip istemediğinizi sorar.
+`pnpm dev`, Python backend ve birleşik web UI süreçlerini tek komutla yönetir. Kurulumdan sonra
+`Start_Local_Analytics_Copilot.cmd` çift tıklanabilir.
 
-Manuel kurulum:
+Native Tauri geliştirme için ek olarak Rust stable, Visual Studio Build Tools içindeki **Desktop
+development with C++**, MSVC ve Windows SDK gerekir:
 
 ```powershell
-python -m venv .venv
-.\.venv\Scripts\Activate.ps1
-pip install -e ".[all,dev]"
-copy .env.example .env
-ollama pull qwen3.5:9b
-# optional:
-ollama pull gpt-oss:20b
+pnpm desktop:dev
 ```
 
-## 3. Kontrol
+Eksik native prerequisite anlaşılır hata ile bildirilir. Hazır `Setup.exe` henüz yayımlanmamıştır;
+native Windows kabulü tamamlanmadan installer production-ready sayılmaz.
+
+Ayrıntılı Türkçe rehber:
+[`docs/KURULUM_VE_KULLANIM_TR.md`](docs/KURULUM_VE_KULLANIM_TR.md).
+
+## İlk analiz
+
+1. CSV veya XLSX yükleyin ve gerekiyorsa sheet seçin.
+2. Quick, Analyst veya Agent modunu seçin.
+3. Analyst/Agent için gerekiyorsa hedef sütunu ve doğrulanmış semantiği açıkça belirtin.
+4. Örnek soru: `Bölgelere göre tahsilatı karşılaştır ve sorunlu segmentleri kanıtlarıyla sırala.`
+5. Verifier sonucunu kontrol edin ve verified Excel/HTML/PDF raporunu indirin.
+
+Business KPI tanımı verilmediyse kolon adı yalnızca kolon adı olarak kalır; sistem şirket kuralı
+uydurmaz.
+
+## Test ve kalite kapıları
 
 ```powershell
-lac doctor
-lac privacy-check
-lac benchmark-models
+python -m pytest -q
+python -m ruff format --check .
+python -m ruff check .
+python -m build
+pnpm desktop:install
+pnpm desktop:type-check
+pnpm desktop:lint
+pnpm desktop:test
+pnpm web:build
 ```
 
-## 4. Başlat
+GitHub Actions ayrıca Python 3.11/3.12, Windows Python smoke/privacy, desktop contract/build,
+Windows Tauri `cargo check --locked` ve paketlenmiş backend executable health smoke çalıştırır.
 
-```powershell
-.\Start_Local_Analytics_Copilot.cmd
-```
+## Doğrulanmış ve bekleyen durum
 
-Birleşik arayüz: `http://127.0.0.1:3000`
+| Alan                                                | Durum        |
+| --------------------------------------------------- | ------------ |
+| Milestone 1 — deterministic Quick CSV/XLSX          | PASS         |
+| Milestone 2 — Analyst + verifier + verified reports | PASS         |
+| Milestone 3 — bounded local Agent                   | PARTIAL      |
+| Tek repo / tek launcher kaynak yapısı               | PASS         |
+| Linux/Windows GitHub Actions                        | PASS         |
+| Fiziksel Windows Tauri + canlı Ollama Agent E2E     | BEKLİYOR     |
+| Stable `v1.0.0` / production installer              | YAYIMLANMADI |
 
-Data Bridge API: `http://127.0.0.1:8765`
+Mevcut pre-release eksikleri:
 
-Ayarlar:
+1. Kontrollü CSV ve XLSX ile gerçek yerel Ollama Agent kabulü.
+2. Hedef Windows makinede `pnpm desktop:dev` fiziksel Tauri E2E.
+3. Windows installer build, kurulum, upgrade ve uninstall kabulü.
+4. İsteğe bağlı project-level notlar ve onaylı dönem metadata'sı gibi v1.0 sonrası history
+   genişletmeleri.
 
-`http://127.0.0.1:8765/admin`
+Release kapıları: [`docs/RELEASE_CHECKLIST.md`](docs/RELEASE_CHECKLIST.md).
 
----
+## Mimari ve güvenlik belgeleri
 
-# İlk Kullanım
+- [`docs/HYBRID_ARCHITECTURE.md`](docs/HYBRID_ARCHITECTURE.md)
+- [`docs/ADR-001-agent-core.md`](docs/ADR-001-agent-core.md)
+- [`docs/PRIVACY_AND_SECURITY.md`](docs/PRIVACY_AND_SECURITY.md)
+- [`SECURITY.md`](SECURITY.md)
+- [`WORK_HANDOFF.md`](WORK_HANDOFF.md)
 
-Dosyalar:
+## Lisans ve attribution
 
-```text
-workspace/
-├── incoming/     # analiz edilecek dosyalar
-├── knowledge/    # prosedür, veri sözlüğü, KPI dokümanları
-├── outputs/      # üretilen Excel/HTML/PDF
-├── working/
-├── archive/
-└── logs/
-```
+- Local Analytics Copilot: [`LICENSE`](LICENSE) — MIT
+- Hermetic-derived desktop/web source: [`apps/desktop/LICENSE`](apps/desktop/LICENSE) — MIT,
+  original copyright korunmuştur
+- Vendored json-render: [`apps/desktop/src/spec/LICENSE`](apps/desktop/src/spec/LICENSE) — Apache-2.0
+- Toplu attribution: [`THIRD-PARTY-NOTICES.md`](THIRD-PARTY-NOTICES.md)
 
-Örnek demo verisi:
-
-```powershell
-python scripts/generate_demo_data.py
-lac review incoming/demo_npl.csv --dashboard
-```
-
-Data Bridge regression verisini üretmek için:
-
-```powershell
-python scripts/generate_credit_risk_regression.py
-```
-
-Beklenen profil: `1508` satır, `22` sütun, `52` eksik hücre ve `8` exact duplicate kopya.
-
-AI'ya örnek:
-
-> `incoming/demo_npl.csv dosyasını bana giriş seviyesinde öğret. Önce veri kalitesi kontrolü yap, sonra DPD ve portföy performansını analiz et; uygun istatistikleri neden seçtiğini açıkla ve Excel dashboard oluştur.`
-
-## Bilgi bankası
-
-Dosyayı `workspace/knowledge` içine koyun:
-
-```powershell
-lac knowledge-ingest knowledge/veri_sozlugu.pdf
-lac knowledge-search "Recovery Rate tanımı"
-```
-
-Embedding isterseniz lokal embedding modelini ayrıca kullanabilirsiniz; FTS arama embedding olmadan da çalışır.
-
-Görüntü tabanlı/taranmış PDF için opsiyonel yerel OCR desteği vardır. Tesseract kurduktan sonra `pip install -e ".[ocr]"` ve `lac knowledge-ingest knowledge/taranmis.pdf --ocr` kullanabilirsiniz.
-
-## Hafıza onayı
-
-Agent bir şirket kuralını otomatik “doğru” kabul etmez:
-
-```powershell
-lac memory-list candidate
-lac memory-approve 3
-```
-
-## Dosya / dış ağ işlemi onayı
-
-Ajan Excel, HTML, PDF veya sentetik veri üretmek ya da internete sorgu göndermek istediğinde işlem
-çalıştırılmaz; tam araç adı ve argümanlarıyla kuyruğa alınır. `/admin` ekranından inceleyebilir veya:
-
-```powershell
-lac action-list pending
-lac action-approve ACTION_ID
-# veya
-lac action-reject ACTION_ID
-```
-
-Onay, yalnızca kuyruktaki değişmez araç + argüman çiftini çalıştırır.
-
-## Öğrenme profili
-
-```powershell
-lac learning-profile
-lac learning-update "Hypothesis Testing" 10 "Temel farkı anladım"
-```
-
-## File Watcher
-
-```powershell
-lac watch
-```
-
-`workspace/incoming` klasörüne yeni bir veri dosyası geldiğinde deterministik ilk inceleme JSON'u üretir.
-
----
-
-# Database
-
-Şifreleri YAML'a veya prompt'a koymayın. `.env` / environment variable kullanın.
-
-```text
-LAC_DB_MAIN_URL=postgresql+psycopg://...
-LAC_DB_SQLSERVER_URL=mssql+pyodbc://...
-```
-
-`config/database_profiles.yaml` hangi env değişkeninin kullanılacağını söyler.
-
-Production'da AI için ayrı **read-only** kullanıcı açın.
-
----
-
-# İnternet modu
-
-Varsayılan:
-
-```text
-LAC_ALLOW_WEB=false
-```
-
-Opsiyonel hybrid research:
-
-```text
-LAC_ALLOW_WEB=true
-```
-
-Web aracı ayrıca insan onayı ister. Bu ayar açıldığında yalnızca **public web araştırması** için
-kullanın. Müşteri/borçlu satırlarını, iç raporları, gizli şirket bilgisini web sorgusuna koymayın.
-
----
-
-# OpenClaw
-
-OpenClaw opsiyonel ve bu RC'de **deneysel** bir entegrasyondur. Yerel Analytics Copilot, OpenClaw
-olmadan da deterministik analiz motoru olarak çalışır. OpenClaw sürümü değiştikçe sağlayıcı davranışı
-değişebileceğinden hedef makinede smoke-test edilmeden production orkestrasyonunda kullanmayın.
-
-Bkz:
-- `docs/OPENCLAW_INTEGRATION.md`
-- `openclaw/SKILL.md`
-- `openclaw/ollama-provider.example.json5`
-
----
-
-# Geliştirme / Test
-
-```powershell
-ruff format --check .
-ruff check .
-pytest --cov=lacopilot --cov-report=term-missing -q
-lac acceptance
-lac project-review --mode deep
-```
-
-`hermetic-hybrid-integration` kapısı: **49 test, %66,29 kaynak kapsamı, sıfır Ruff ihlali**.
-Donanım/model acceptance testleri Ollama çalıştığı hedef makinede ayrıca yürütülür.
-
-`project-review` mimari/risk dokümanlarını **yerel deep model** ile eleştirel olarak inceler; cloud API kullanmaz.
-
----
-
-# Önemli sınırlar
-
-Bu yazılım:
-- şirket politikasının yerine geçmez,
-- istatistiksel sonucu otomatik iş kararı yapmaz,
-- anomaly flag'ini fraud kanıtı saymaz,
-- correlation/regression sonucunu otomatik nedensellik saymaz,
-- sentetik veriye formal privacy garantisi vermez,
-- şirket Recovery/KPI formüllerini siz onaylamadan “standart” kabul etmez.
-
-Önce demo/sahte veriyle test edin; gerçek şirket verisinde bilgi güvenliği ve KVKK politikalarına uyun.
-
-## Ayrıntılı dokümanlar
-- `docs/ARCHITECTURE.md`
-- `docs/ANALYTICS_CAPABILITIES.md`
-- `docs/MASTER_PLAN.md`
-- `docs/RISK_REGISTER.md`
-- `docs/PRIVACY_AND_SECURITY.md`
-- `docs/COSTS_AND_MODELS.md`
-- `docs/REMOTE_ACCESS.md`
-- `docs/OPENCLAW_INTEGRATION.md`
-- `docs/GLOSSARY.md`
-- `docs/PRE_RELEASE_AUDIT.md`
-- `SECURITY.md`
-- `CONTRIBUTING.md`
+Bu proje analitik yardımcı yazılımdır; OS izolasyonu, read-only veritabanı hesabı, firewall, DLP,
+KVKK/GDPR kontrolleri veya kurum içi onayın yerine geçmez.

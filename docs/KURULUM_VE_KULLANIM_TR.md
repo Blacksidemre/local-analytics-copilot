@@ -5,21 +5,21 @@ yeterlidir. İlk denemeyi gerçek şirket verisi yerine repodaki sentetik demo v
 
 ## En kısa cevaplar
 
-| Soru | Kısa cevap |
-|---|---|
-| Ücretli mi? | Yerel kullanım için zorunlu abonelik veya ücretli API anahtarı yoktur. |
-| OpenAI API anahtarı gerekiyor mu? | Hayır. |
-| Ollama gerekiyor mu? | AI ile sohbet ve araç seçimi için evet; yalnızca deterministik CLI analizleri için hayır. |
-| Ollama nedir? | AI modelini kendi bilgisayarınızda çalıştıran yerel model motorudur. |
-| İlk hangi modeli kurmalıyım? | `qwen3.5:9b`. İlk kurulumda yalnızca bunu kurun. |
-| Model ne kadar yer kaplar? | `qwen3.5:9b` indirmesi yaklaşık 6,6 GB'dır. |
-| `gpt-oss:20b` şart mı? | Hayır. Opsiyonel, daha ağır ve yaklaşık 14 GB'dır. |
-| Excel şart mı? | Hayır. `.xlsx` raporları Excel olmadan üretilebilir; native PivotTable için masaüstü Excel gerekir. |
-| OpenClaw şart mı? | Hayır. Deneysel ve opsiyoneldir. İlk kurulumda kullanmayın. |
-| İnternet sürekli gerekli mi? | İlk indirmeler için gerekir. Yerel model ve yerel dosyalarla normal kullanım çevrimdışı olabilir. |
-| Veriler internete gider mi? | Varsayılan yerel ayarlarda web, uzak Ollama ve cloud model kullanımı kapalıdır. |
-| GPU şart mı? | Hayır; CPU ile çalışabilir ama belirgin şekilde yavaş olur. NVIDIA GPU önerilir. |
-| Bu sürüm production hazır mı? | Hayır. `1.0.0rc1` bir sürüm adayıdır; önce demo ve kendi cihaz testleri yapılmalıdır. |
+| Soru                              | Kısa cevap                                                                                          |
+| --------------------------------- | --------------------------------------------------------------------------------------------------- |
+| Ücretli mi?                       | Yerel kullanım için zorunlu abonelik veya ücretli API anahtarı yoktur.                              |
+| OpenAI API anahtarı gerekiyor mu? | Hayır.                                                                                              |
+| Ollama gerekiyor mu?              | AI ile sohbet ve araç seçimi için evet; yalnızca deterministik CLI analizleri için hayır.           |
+| Ollama nedir?                     | AI modelini kendi bilgisayarınızda çalıştıran yerel model motorudur.                                |
+| İlk hangi modeli kurmalıyım?      | `qwen3.5:9b`. İlk kurulumda yalnızca bunu kurun.                                                    |
+| Model ne kadar yer kaplar?        | `qwen3.5:9b` indirmesi yaklaşık 6,6 GB'dır.                                                         |
+| `gpt-oss:20b` şart mı?            | Hayır. Opsiyonel, daha ağır ve yaklaşık 14 GB'dır.                                                  |
+| Excel şart mı?                    | Hayır. `.xlsx` raporları Excel olmadan üretilebilir; native PivotTable için masaüstü Excel gerekir. |
+| OpenClaw şart mı?                 | Hayır. Deneysel ve opsiyoneldir. İlk kurulumda kullanmayın.                                         |
+| İnternet sürekli gerekli mi?      | İlk indirmeler için gerekir. Yerel model ve yerel dosyalarla normal kullanım çevrimdışı olabilir.   |
+| Veriler internete gider mi?       | Varsayılan yerel ayarlarda web, uzak Ollama ve cloud model kullanımı kapalıdır.                     |
+| GPU şart mı?                      | Hayır; CPU ile çalışabilir ama belirgin şekilde yavaş olur. NVIDIA GPU önerilir.                    |
+| Bu sürüm production hazır mı?     | Hayır. Canonical ürün pre-release durumundadır; fiziksel Windows/installer kabulü bekleniyor.       |
 
 ## Sistem nasıl çalışıyor?
 
@@ -40,17 +40,17 @@ Siz → Tarayıcı arayüzü → Local Analytics Copilot → Ollama → Yerel AI
 
 ## Neler kurulacak?
 
-| Bileşen | Neden gerekli? | Zorunlu mu? | Ücret |
-|---|---|---:|---:|
-| Python 3.11–3.13 | Analiz uygulamasını ve veri kütüphanelerini çalıştırır | Evet | Ücretsiz |
-| Ollama | Yerel AI modelini çalıştırır | AI sohbeti için evet | Yerel kullanım ücretsiz |
-| `qwen3.5:9b` | Ana yerel AI modeli | Önerilen | İndirme/kullanım ücreti yok |
-| Python paketleri | Pandas, SciPy, FastAPI, Excel ve diğer özellikler | Evet | Ücretsiz |
-| NVIDIA sürücüsü | GPU hızlandırması | NVIDIA GPU için | Ücretsiz |
-| Git | Repoyu komutla indirmek ve güncellemek | Hayır | Ücretsiz |
-| Microsoft Excel | Gerçek Excel COM/PivotTable otomasyonu | Hayır | Lisansınıza bağlı |
-| SQL Server/PostgreSQL | Canlı veritabanı analizi | Hayır | Ortamınıza bağlı |
-| OpenClaw | Opsiyonel orkestrasyon | Hayır | Seçtiğiniz kuruluma bağlı |
+| Bileşen               | Neden gerekli?                                         |          Zorunlu mu? |                       Ücret |
+| --------------------- | ------------------------------------------------------ | -------------------: | --------------------------: |
+| Python 3.11–3.13      | Analiz uygulamasını ve veri kütüphanelerini çalıştırır |                 Evet |                    Ücretsiz |
+| Ollama                | Yerel AI modelini çalıştırır                           | AI sohbeti için evet |     Yerel kullanım ücretsiz |
+| `qwen3.5:9b`          | Ana yerel AI modeli                                    |             Önerilen | İndirme/kullanım ücreti yok |
+| Python paketleri      | Pandas, SciPy, FastAPI, Excel ve diğer özellikler      |                 Evet |                    Ücretsiz |
+| NVIDIA sürücüsü       | GPU hızlandırması                                      |      NVIDIA GPU için |                    Ücretsiz |
+| Git                   | Repoyu komutla indirmek ve güncellemek                 |                Hayır |                    Ücretsiz |
+| Microsoft Excel       | Gerçek Excel COM/PivotTable otomasyonu                 |                Hayır |           Lisansınıza bağlı |
+| SQL Server/PostgreSQL | Canlı veritabanı analizi                               |                Hayır |            Ortamınıza bağlı |
+| OpenClaw              | Opsiyonel orkestrasyon                                 |                Hayır |   Seçtiğiniz kuruluma bağlı |
 
 Ollama'nın cloud modelleri ve ücretli planları da vardır; bu proje onları varsayılan olarak
 kullanmaz. Yerel kurulumun gerçek maliyeti yalnızca bilgisayarınızın disk alanı, elektrik tüketimi
@@ -102,7 +102,7 @@ py -3.12 --version
 
 Komutlardan yalnızca birinin çalışması yeterlidir. `python` Microsoft Store aliası nedeniyle hata verse
 bile `py -3.12` çalışıyorsa kurulum script'i Python'ı otomatik bulur. `Python 3.11`, `3.12` veya
-`3.13` desteklenir; en sorunsuz başlangıç önerisi Python 3.12'dir. Python 3.14 bu RC1 tarafından
+`3.13` desteklenir; en sorunsuz başlangıç önerisi Python 3.12'dir. Python 3.14 bu pre-release tarafından
 henüz desteklenmez.
 
 ## 3. Ollama kurun
@@ -132,12 +132,8 @@ git clone https://github.com/Blacksidemre/local-analytics-copilot.git
 cd local-analytics-copilot
 ```
 
-Hibrit geliştirme dalını test edecekseniz:
-
-```powershell
-git clone -b hermetic-hybrid-integration https://github.com/Blacksidemre/local-analytics-copilot.git
-cd local-analytics-copilot
-```
+`main` artık canonical tek-repo ürününü içerir. Normal kurulumda başka branch veya ikinci Hermetic
+reposu klonlamayın.
 
 ## 5. Doğru klasörde PowerShell açın
 
@@ -269,23 +265,23 @@ gönderilmez.
 İlk analiz için örnek:
 
 > `incoming/portfoy.xlsx dosyasını önce veri kalitesi açısından incele. Kolonları ve sorunları basitçe
-> anlat. Sonra yapılabilecek analizleri önem sırasına koy. Henüz dosyaya yazma; önce planı göster.`
+anlat. Sonra yapılabilecek analizleri önem sırasına koy. Henüz dosyaya yazma; önce planı göster.`
 
 NPL örneği:
 
 > `incoming/demo_npl.csv için DPD dağılımını, tahsilat oranını, portföy karşılaştırmasını ve borçlu
-> yoğunlaşmasını analiz et. Kullandığın yöntemleri başlangıç seviyesinde açıkla. Sonunda Excel dashboard
-> oluşturmayı öner.`
+yoğunlaşmasını analiz et. Kullandığın yöntemleri başlangıç seviyesinde açıkla. Sonunda Excel dashboard
+oluşturmayı öner.`
 
 İstatistik örneği:
 
 > `A ve B portföylerinin tahsilat performansı gerçekten farklı mı? Varsayımları kontrol et, uygun testi
-> kendin seç, effect size ve güven aralığını açıkla.`
+kendin seç, effect size ve güven aralığını açıkla.`
 
 Bilgi bankası örneği:
 
 > `Şirket prosedüründeki Recovery Rate tanımını bul, kaynağını göster ve bu veri setindeki hesaplama ile
-> uyumunu kontrol et.`
+uyumunu kontrol et.`
 
 ## 4. Neden bazı işlemler hemen yapılmıyor?
 
@@ -559,15 +555,15 @@ Gerçek kullanıma geçmeden önce hepsinin doğru olduğundan emin olun:
 - [ ] `ollama list` içinde `qwen3.5:9b` var.
 - [ ] `lac doctor` Ollama'ya ulaşıyor.
 - [ ] `lac privacy-check` web, remote ve cloud için güvenli durumu gösteriyor.
-- [ ] 49 otomatik test kurulurken geçti.
+- [ ] Repodaki güncel otomatik test paketi geçti.
 - [ ] Sentetik demo analizi ve dashboard üretimi çalıştı.
 - [ ] Tarayıcı arayüzü yalnızca `127.0.0.1` üzerinden açılıyor.
 - [ ] Gerçek veri kullanımı için kurum/bilgi güvenliği onayı var.
 - [ ] SQL hesabı gerekiyorsa gerçekten read-only.
 - [ ] Onay kuyruğunu nasıl inceleyeceğinizi biliyorsunuz.
 
-Bu liste geçildikten sonra gerçek cihaz bulgularını GitHub Issues'a kaydedip RC1'i birlikte
-iyileştirebiliriz.
+Bu liste geçildikten sonra fiziksel Windows kabul sonuçlarını release checklist'e kaydedin. Stable
+`v1.0.0`, installer kurulumu/upgrade/uninstall dahil bütün zorunlu kapılar geçmeden yayımlanmamalıdır.
 
 ## Resmi kaynaklar
 

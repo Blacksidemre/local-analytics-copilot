@@ -2,205 +2,145 @@
 
 Updated: 2026-09-01
 
-Branch: `hermetic-hybrid-integration`
-
 Canonical repository: `Blacksidemre/local-analytics-copilot`
-Protected branches: `main` and upstream `achalp/hermetic` were not changed
 
-## Published integration checkpoints
+Development branch: `hermetic-hybrid-integration`
 
-- Canonical single-repository consolidation checkpoint: `64c709d` on
-  `Blacksidemre/local-analytics-copilot:hermetic-hybrid-integration`.
-- Verified Agent evidence-report checkpoint: `d270d4a`.
-- Current CI-green product checkpoint: `3a29916`; GitHub Actions CI Run 26 completed successfully
-  with all five jobs passing.
-- Historical Hermetic UI checkpoint: `3fe0afb` on
-  `Blacksidemre/hermetic:lac-data-bridge-integration`.
-- The canonical repository tree was verified byte-for-byte against the locally tested tree before
-  the branch ref was advanced.
+Release status: **pre-release — physical Windows acceptance pending**
 
-## Current product state
+## Git and governance
 
-The product source is now consolidated in one repository. The deterministic Python analytics,
-reporting and Agent services remain under `src/lacopilot`; the Hermetic-derived Next/Tauri product
-shell is preserved under `apps/desktop`. Original MIT and Apache-2.0 notices remain in place.
+- The first canonical product promotion was merged through protected-branch PR #4.
+- Promotion method: normal merge commit; no force push, history rewrite or direct ruleset bypass.
+- Promoted `main` checkpoint: `d201f197d17873b7a7b0f36013e81ae3e5cde56e`.
+- Main GitHub Actions Run 27 passed all five required jobs.
+- Follow-up history/comparison and documentation cleanup is developed on the integration branch and
+  must pass its PR CI before the next protected `main` merge.
+- The old `Blacksidemre/hermetic` repository is historical/reference only. It is not a runtime,
+  build or package dependency and receives no new product work.
+- `achalp/hermetic` remains read-only; no PR, issue or write was sent upstream.
 
-The runtime boundary is intentionally still two localhost processes inside one product:
+## Canonical product
 
-```text
-Local Analytics Copilot launcher / Tauri
-  -> trusted same-origin UI proxy
-  -> LAC Data Bridge + deterministic analytics + verifier
-  -> local Ollama planner/synthesizer (optional; never authoritative for calculations)
-```
+One repository contains:
 
-The old `Blacksidemre/hermetic` integration branch is a historical/reference source after this
-consolidation; end users no longer need to clone it.
+- `apps/desktop`: Hermetic-derived Next.js/Tauri product shell;
+- `src/lacopilot`: deterministic ingestion, analytics, bounded Agent, verifier, reports and history;
+- `scripts`: canonical web/desktop launch and packaged-backend build entries;
+- `tests`: CSV/XLSX, Agent/adversarial, verifier, reporting, history and launcher regression.
 
-## Milestone status
+Root MIT, Hermetic-derived MIT, vendored Apache-2.0 and font attribution are preserved in `LICENSE`,
+`apps/desktop/LICENSE`, `apps/desktop/src/spec/LICENSE`, `apps/desktop/src/spec/NOTICE.md` and
+`THIRD-PARTY-NOTICES.md`.
 
-- Milestone 1 — deterministic CSV/XLSX Quick path: **PASS for browser path**. The user's prior
-  physical Windows tests confirmed `1508 x 22`, 52 missing cells and 8 exact duplicate copies.
-- Milestone 2 — deterministic Analyst, verifier and Excel/HTML/PDF reports: **PASS for browser
-  path**. The user's prior physical Windows test confirmed Analyst verification and report output.
-- Milestone 3 — bounded local Agent: **PARTIAL**. Planner/runtime, Agent API/UI, adversarial suite,
-  verified synthesis and local history foundation are implemented. A live local-Ollama Agent run
-  and packaged Windows Tauri E2E are still required before PASS.
+## Milestones
 
-## Bounded Agent capabilities
+- Milestone 1 — deterministic CSV/XLSX Quick path: **PASS**.
+- Milestone 2 — deterministic Analyst, verifier and Excel/HTML/PDF reports: **PASS**.
+- Milestone 3 — bounded local Agent: **PARTIAL**.
 
-`POST /api/v1/analysis/agent` implements:
+Milestone 3 remains PARTIAL only because the exact candidate still needs controlled CSV/XLSX Agent
+runs with a real local Ollama model and physical packaged Windows/Tauri acceptance. Repository-side
+Agent implementation and automated adversarial/evidence gates are present.
 
-- local Ollama JSON-schema planner with a maximum of six steps;
-- allowlisted typed tools only: dataset profile, target association screen, numeric description,
-  category frequency, segment aggregation, time trend and outlier screening;
-- duplicate-call/loop guard, dependency checks, failure budget and goal completion;
-- independent deterministic tool/run verification and stable `finding_id` evidence;
-- bounded tool-less synthesis from verified evidence only;
-- no arbitrary Python, shell, PowerShell, SQL, filesystem traversal, internet or raw-row dump;
-- fail-closed behavior for fake evidence, unsupported numeric claims, causality, prediction,
-  unapproved business/KPI meaning and prompt injection in dataset values;
-- deterministic Quick Dashboard fallback when Ollama/planner is unavailable.
+## Agent and reports
 
-Verifier-passed Agent runs now have evidence-only Excel, HTML and PDF exports through
-`POST /api/v1/analysis/agent/report`. All three formats use the same archived finding manifest and
-SHA-256 digest, are reopened and validated before download, and exclude raw rows and unverified
-model prose. Formula injection, scripts/external resources, duplicate or altered evidence and
-unverified history fail closed.
+`POST /api/v1/analysis/agent` provides a local Ollama JSON-schema planner, maximum six-step typed
+plan, allowlisted deterministic tools, dependency validation, failure budget, duplicate-call/loop
+guard, stable finding evidence, independent verifier and bounded tool-less synthesis.
 
-The Agent UI shows the active dataset, optional explicit target semantics, plan steps, progress,
-verified evidence, verifier result, safe synthesis, evidence-report downloads and recoverable
-local-model errors.
+There is no arbitrary Python, shell, PowerShell, SQL, filesystem, internet or raw-row-dump Agent
+tool. Fake IDs/evidence, unsupported numbers, invented business/KPI meaning and
+association-to-causality/prediction claims fail closed. Model-unavailable cases retain deterministic
+Quick/Analyst operation.
 
-## Local model management
+Verifier-passed Agent runs can generate Excel, HTML and PDF from one archived evidence manifest.
+All formats share the same SHA-256 binding and numeric findings, are reopened for validation and
+exclude raw rows and unverified model prose.
 
-Bridge health reports installed Ollama models, the configured default and whether it is present.
-The UI offers an installed-model selector and passes the selection through Quick, Analyst, Agent
-and report requests. If no model is available, deterministic Quick/Analyst calculations remain
-usable; unverified model prose is never presented as trusted output.
+## History and deterministic comparison
 
-## Memory and history foundation
+- Verifier-passed Agent runs can be listed, opened and explicitly deleted in the desktop UI.
+- Storage is local SQLite and bounded to dataset fingerprint, safe request summary, used typed tools
+  and at most 48 verified findings.
+- Raw rows, internal model prompts, tool arguments, secrets and unverified prose are not archived.
+- Two different verifier-passed manifests can be compared without reopening raw data.
+- Only matching `finding_id`, kind, unit, deterministic source and dimension contracts receive
+  numeric deltas; changed/unchanged/added/removed/incompatible states are explicit.
+- Period and business meaning remain `not_inferred`; the user selects baseline/current order.
+- Archived findings are never promoted automatically into a current run.
 
-Verified Agent runs can be stored in local `workspace/analysis_history.sqlite3` and can be listed,
-opened or deleted through typed API routes. Storage keeps only the dataset-local fingerprint,
-request summary, used tool names and a maximum of 48 verifier-passed findings. It does not retain
-raw rows, model prompts, tool arguments or secrets, and archived findings are not automatically
-promoted to evidence for a later run. The report endpoint projects only an explicitly requested,
-verifier-passed archived run; it does not rerun a tool or reopen the dataset.
+## Launcher and Windows packaging preparation
 
-Company rules still follow the existing candidate -> explicit human approval -> approved memory
-flow. Full cross-session conversational/project-history UX and period comparison remain future
-work; the current storage layer is deliberately a safe foundation rather than autonomous memory.
+- Root `pnpm dev` supervises the deterministic backend and unified web UI.
+- Root `pnpm desktop:dev` supervises the backend and Tauri development shell.
+- Paths are repository/resource relative; services bind loopback only.
+- Launchers detect unrelated port occupants, reuse only identity-verified services and clean up only
+  owned child processes.
+- Release Tauri uses ephemeral ports, per-launch API token, packaged Node UI sidecar and PyInstaller
+  backend resource.
+- Config/log/workspace directories resolve under user-local application data in packaged mode.
+- Missing Rust/Visual C++ Build Tools/MSVC/Windows SDK produces actionable prerequisite guidance.
+- Ollama/model absence is recoverable; deterministic modes remain available.
 
-## Canonical launcher and desktop packaging
+## Documentation cleanup
 
-- Root `pnpm dev` starts and supervises the backend plus unified web UI.
-- Root `pnpm desktop:dev` starts the backend and Tauri development shell.
-- Commands use relative paths, loopback-only ports, service-identity probes and bounded waits.
-- The launcher refuses unrelated services on required ports, reuses healthy existing services and
-  kills only child processes it started.
-- `Start_Local_Analytics_Copilot.cmd` / `scripts/launch_windows.ps1` start the unified browser UI
-  and preserve the previously verified Windows UTF-8, Ollama and Docker-off behavior.
-- Release Tauri code allocates ephemeral loopback ports, generates a per-run API token, stores
-  workspace/config/logs under the application data directory and ties backend/UI children to the
-  app lifecycle.
-- The deterministic backend has a PyInstaller one-directory build path and is bundled as a Tauri
-  resource. Windows CI builds and smoke-tests that executable.
-- Native build prerequisites are checked with an actionable Visual C++/Windows SDK message.
-
-## License and attribution
-
-- LAC root license: MIT.
-- Hermetic-derived source: `apps/desktop/LICENSE` (MIT, original copyright retained).
-- Vendored json-render: `apps/desktop/src/spec/LICENSE` and `NOTICE.md` (Apache-2.0).
-- Consolidated notice index: `THIRD-PARTY-NOTICES.md`.
+- Root README now describes the canonical single-repository pre-release product.
+- Current architecture, build status, product plan, privacy/offline behavior and release checklist
+  reflect Quick → Analyst → bounded Agent.
+- Pre-consolidation RC1/Hermetic documents are moved under `docs/archive` or explicitly marked
+  historical/deprecated.
+- Stable `v1.0.0` and production installer claims remain blocked.
 
 ## Latest local validation
 
 ```text
-Python suite excluding the known local Polars and DuckDB binary crashes:
-  121 passed, 1 skipped (PowerShell absent), 2 deselected
-  coverage 74.71% (required minimum 60%)
+Python Ruff format/lint: PASS
+Python regression: 125 passed, 1 skipped (PowerShell unavailable)
+Python coverage: 75.74% (required 60%)
+Python sdist/wheel: PASS
+Python dependency check: PASS
 
-Agent/history/report/API targeted tests:
-  8 passed
-
-Canonical launcher + packaging contract:
-  7 passed
-
-Desktop formatting:
-  PASS
-
-Desktop ESLint:
-  PASS with 47 inherited warnings, 0 errors
-
-Desktop TypeScript:
-  PASS
-
-Desktop bridge/UI/proxy/launcher Vitest:
-  48 passed
-
-Offline production font contract:
-  PASS (no build-time Google Fonts request)
-
-Canonical Next production build:
-  PASS (69 routes/pages, telemetry and network proxies disabled)
-
-Python sdist/wheel + dependency check:
-  PASS
-
-git diff --check:
-  PASS
-
-GitHub Actions CI Run 26 on 3a29916:
-  PASS (5/5 jobs)
-  Linux Python 3.11 + 3.12
-  Windows Python smoke + privacy check
-  Desktop contracts + production build
-  Windows Tauri cargo check
-  Packaged Windows backend executable + health smoke
+History/Agent API targeted Python: 7 passed
+Desktop bridge/history + UI targeted Vitest: 34 passed
+Desktop TypeScript: PASS
+Modified desktop ESLint: PASS
+Desktop/root Prettier: PASS
+git diff --check: PASS
 ```
 
-The transient Linux environment's installed `polars` and `duckdb` native modules terminate with a
-CPU `Bus error` in their two execution tests. The remainder of the suite passes when those two
-known tests are deselected; GitHub Linux/Windows jobs run the complete suite on clean runners.
+The Next production build compiled successfully and entered its post-compile checks locally, but the
+managed environment stopped the process when an inherited provider path attempted a prohibited
+network/metadata probe. The broad inherited desktop test inventory was stopped for the same safety
+reason. This was not bypassed. The changed bridge/UI tests are green; the clean GitHub Actions
+desktop-contract build and selected offline tests are the authoritative final gate.
 
-The canonical Next production build passes with an in-tree dependency tree. Geist and Geist Mono
-are bundled from the existing `@fontsource-variable` packages, so an offline build no longer makes
-a Google Fonts request.
-
-The complete inherited Hermetic Vitest inventory was not run to completion in this managed
-workspace because one unrelated cloud-credential test attempted to contact
-`metadata.google.internal` and was blocked by the environment security boundary. The canonical
-CI-selected bridge, Agent UI, proxy, launcher and offline-build tests all passed without network
-access.
-
-Rust/Cargo and PyInstaller are not installed in this Linux workspace. GitHub's Windows runner
-successfully completed `cargo check --locked`, built the packaged backend and passed its executable
-health smoke on `3a29916`. This is still not a claim that the final installed Tauri application
-passed on the user's physical Windows machine.
+Rust/Cargo and physical Windows are unavailable in this Linux workspace. The last promoted main CI
+passed Windows Tauri `cargo check --locked` plus packaged backend executable health smoke, but those
+checks do not prove a physically installed desktop application.
 
 ## Remaining release blockers
 
-1. Run one real local-Ollama Agent request on controlled CSV and XLSX and confirm verified output.
-2. Install Visual Studio Build Tools (`Desktop development with C++`, MSVC and Windows SDK) and
-   complete the physical `pnpm desktop:dev` Tauri acceptance.
-3. Build and test the Windows installer/package on the physical target machine.
-4. Add fuller history/project comparison UX before stable v1.0 if it is considered a release
-   requirement rather than post-v1 scope.
+1. Integration candidate and follow-up protected `main` PR CI must be green.
+2. Run controlled CSV and XLSX Agent requests with the configured real local Ollama model.
+3. Install Visual Studio Build Tools (`Desktop development with C++`), MSVC and Windows SDK.
+4. Run physical Tauri startup, upload, Agent, verifier, report and shutdown acceptance.
+5. Build the Windows installer and pass clean install, shortcut launch, upgrade and uninstall.
 
 ## Minimum later Windows acceptance
 
-From only the canonical LAC repository:
+From only the canonical repository:
 
 ```powershell
-git switch hermetic-hybrid-integration
+git switch main
 git pull
 pnpm desktop:install
 pnpm desktop:dev
 ```
 
-Then upload the controlled CSV and XLSX fixture, run one natural-language Agent request, confirm
-the verifier passes, and download one report. No second repository or second terminal is required.
+Upload the controlled CSV and XLSX fixture, run one natural-language Agent request on each, confirm
+the verifier passes and download one verified report. After developer E2E passes, run
+`pnpm desktop:build` and execute the installer checklist. No second repository or second terminal is
+required.
 
-Do not merge to `main` or publish a stable release until this physical native path passes.
+Do not publish stable `v1.0.0` until every physical gate in `docs/RELEASE_CHECKLIST.md` is evidenced.

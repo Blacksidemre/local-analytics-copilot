@@ -1,6 +1,6 @@
 # Hermetic Hybrid Architecture
 
-Status: canonical single-repository architecture on `hermetic-hybrid-integration`
+Status: canonical single-repository pre-release architecture on `main`
 Decision date: 2026-08-29
 
 ## Product boundary
@@ -77,7 +77,8 @@ replacement/build work.
 | `POST /api/v1/analysis/analyst` | Deterministic target-aware statistics and verifier |
 | `POST /api/v1/analysis/agent` | Bounded local planner, typed tools, verifier and synthesis |
 | `GET/DELETE /api/v1/analysis/history/...` | Local verified-finding archive and deletion |
-| `POST /api/v1/analysis/analyst/report/...` | Verified Excel, HTML and PDF reports |
+| `POST /api/v1/analysis/analyst/report` | Verified Analyst Excel, HTML and PDF reports |
+| `POST /api/v1/analysis/agent/report` | Evidence-only Agent Excel, HTML and PDF reports |
 
 Browser access is limited to configured localhost/Tauri origins. The existing optional API token
 continues to protect every `/api/` route when enabled.
@@ -125,7 +126,8 @@ partial until a live local-Ollama Agent run and the packaged Windows Tauri path 
 
 ## Non-negotiable release rules
 
-- `main` remains the RC1 line until acceptance is complete.
+- `main` is the canonical pre-release product line; stable `v1.0.0` remains blocked until physical
+  Windows and live local-Ollama acceptance are complete.
 - No invented KPI, company rule, benchmark, validation result, or generated file claim.
 - No stable release without a real Windows end-to-end run.
 - Source files are never modified during profiling.

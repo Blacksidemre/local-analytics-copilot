@@ -284,6 +284,72 @@ export type AgentResult = {
   };
 };
 
+export type AnalysisHistoryRunSummary = {
+  run_id: string;
+  dataset_id: string;
+  dataset_ref: string;
+  source_name: string;
+  sheet_name: string;
+  mode: "agent";
+  question: string;
+  run_status: string;
+  verifier_status: "passed";
+  finding_count: number;
+  tools: AgentToolName[];
+  created_at: string;
+};
+
+export type AnalysisHistoryRun = AnalysisHistoryRunSummary & {
+  findings: Array<{
+    finding_id: string;
+    kind?: string;
+    label?: string;
+    value: number;
+    unit?: string;
+    source: string;
+    dimension?: Record<string, string>;
+    warning?: string;
+  }>;
+};
+
+export type AnalysisHistoryList = {
+  schema_version: "analysis-history-list.v1";
+  runs: AnalysisHistoryRunSummary[];
+};
+
+export type AnalysisHistoryComparisonStatus =
+  "changed" | "unchanged" | "added" | "removed" | "incompatible";
+
+export type AnalysisHistoryComparison = {
+  schema_version: "analysis-history-comparison.v1";
+  status: "completed";
+  baseline: AnalysisHistoryRunSummary;
+  current: AnalysisHistoryRunSummary;
+  dataset_relation: "same_dataset_version" | "same_source_new_version" | "different_sources";
+  period_semantics: "not_inferred";
+  summary: Record<AnalysisHistoryComparisonStatus | "total", number>;
+  changes: Array<{
+    finding_id: string;
+    status: AnalysisHistoryComparisonStatus;
+    label: string;
+    baseline_value: number | null;
+    current_value: number | null;
+    absolute_delta: number | null;
+    relative_change_pct: number | null;
+    unit: string | null;
+    source: string | null;
+    dimension: Record<string, string> | null;
+    incompatible_fields?: string[];
+  }>;
+  manifest_sha256: string;
+  verification: {
+    status: "passed";
+    scope: "archived_verified_finding_manifests";
+    evidence_only: true;
+    errors: [];
+  };
+};
+
 type AnalystReportOptions = {
   sheetName?: string;
   targetKind?: AnalystTargetKind;
@@ -490,6 +556,162 @@ const AGENT_TOOLS = new Set<AgentToolName>([
   "analyze_time_trend",
   "screen_outliers",
 ]);
+
+const HISTORY_RUN_ID = /^[0-9a-f]{32}$/;
+const HISTORY_DATASET_ID = /^[0-9a-f]{64}$/;
+const HISTORY_MANIFEST_ID = /^[0-9a-f]{64}$/;
+const HISTORY_CHANGE_STATUSES = new Set<AnalysisHistoryComparisonStatus>([
+  "changed",
+  "unchanged",
+  "added",
+  "removed",
+  "incompatible",
+]);
+
+function isFiniteNumber(value: unknown): value is number {
+  return typeof value === "number" && Number.isFinite(value);
+}
+
+function validateHistorySummary(value: unknown): asserts value is AnalysisHistoryRunSummary {
+  if (
+    !isRecord(value) ||
+    typeof value.run_id !== "string" ||
+    !HISTORY_RUN_ID.test(value.run_id) ||
+    typeof value.dataset_id !== "string" ||
+    !HISTORY_DATASET_ID.test(value.dataset_id) ||
+    typeof value.dataset_ref !== "string" ||
+    typeof value.source_name !== "string" ||
+    typeof value.sheet_name !== "string" ||
+    value.mode !== "agent" ||
+    typeof value.question !== "string" ||
+    typeof value.run_status !== "string" ||
+    value.verifier_status !== "passed" ||
+    !Number.isSafeInteger(value.finding_count) ||
+    (value.finding_count as number) < 1 ||
+    (value.finding_count as number) > 48 ||
+    !Array.isArray(value.tools) ||
+    value.tools.length > 6 ||
+    !value.tools.every((tool) => AGENT_TOOLS.has(tool as AgentToolName)) ||
+    typeof value.created_at !== "string"
+  ) {
+    throw invalidHistoryContract("Geçmiş analiz özeti doğrulama sözleşmesini geçmedi.");
+  }
+}
+
+function validateHistoryFinding(value: unknown): boolean {
+  if (
+    !isRecord(value) ||
+    typeof value.finding_id !== "string" ||
+    !value.finding_id ||
+    typeof value.source !== "string" ||
+    !value.source ||
+    !isFiniteNumber(value.value)
+  ) {
+    return false;
+  }
+  const dimension = value.dimension;
+  return (
+    dimension === undefined ||
+    (isRecord(dimension) &&
+      Object.entries(dimension).every(([key, item]) => key.length > 0 && typeof item === "string"))
+  );
+}
+
+function invalidHistoryContract(message: string): LacBridgeError {
+  const detail: BridgeErrorDetail = {
+    code: "invalid_analysis_history_contract",
+    message,
+    hint: "Geçmiş kayıtlarını yenileyin; doğrulanmamış içerik gösterilmedi.",
+    details: {},
+  };
+  return new LacBridgeError(detail.message, 502, detail);
+}
+
+function validateHistoryList(value: unknown): asserts value is AnalysisHistoryList {
+  if (
+    !isRecord(value) ||
+    value.schema_version !== "analysis-history-list.v1" ||
+    !Array.isArray(value.runs) ||
+    value.runs.length > 100
+  ) {
+    throw invalidHistoryContract("Geçmiş analiz listesi geçersiz.");
+  }
+  value.runs.forEach(validateHistorySummary);
+}
+
+function validateHistoryRun(value: unknown): asserts value is AnalysisHistoryRun {
+  validateHistorySummary(value);
+  const findings = (value as unknown as { findings?: unknown }).findings;
+  if (
+    !Array.isArray(findings) ||
+    findings.length !== value.finding_count ||
+    !findings.every(validateHistoryFinding) ||
+    new Set(findings.map((finding) => (finding as { finding_id: string }).finding_id)).size !==
+      findings.length
+  ) {
+    throw invalidHistoryContract("Geçmiş finding manifesti geçersiz.");
+  }
+}
+
+function validateHistoryComparison(value: unknown): asserts value is AnalysisHistoryComparison {
+  if (
+    !isRecord(value) ||
+    value.schema_version !== "analysis-history-comparison.v1" ||
+    value.status !== "completed" ||
+    !new Set(["same_dataset_version", "same_source_new_version", "different_sources"]).has(
+      value.dataset_relation as string
+    ) ||
+    value.period_semantics !== "not_inferred" ||
+    typeof value.manifest_sha256 !== "string" ||
+    !HISTORY_MANIFEST_ID.test(value.manifest_sha256) ||
+    !isRecord(value.summary) ||
+    !Array.isArray(value.changes) ||
+    value.changes.length > 96 ||
+    !isRecord(value.verification) ||
+    value.verification.status !== "passed" ||
+    value.verification.scope !== "archived_verified_finding_manifests" ||
+    value.verification.evidence_only !== true ||
+    !Array.isArray(value.verification.errors) ||
+    value.verification.errors.length !== 0
+  ) {
+    throw invalidHistoryContract("Geçmiş analiz karşılaştırması doğrulanamadı.");
+  }
+  validateHistorySummary(value.baseline);
+  validateHistorySummary(value.current);
+  const statuses = ["changed", "unchanged", "added", "removed", "incompatible"] as const;
+  const summary = value.summary as Record<string, unknown>;
+  if (
+    !Number.isSafeInteger(summary.total) ||
+    summary.total !== value.changes.length ||
+    !statuses.every((status) => Number.isSafeInteger(summary[status])) ||
+    statuses.reduce((total, status) => total + Number(summary[status]), 0) !== value.changes.length
+  ) {
+    throw invalidHistoryContract("Geçmiş karşılaştırma özeti geçersiz.");
+  }
+  const findingIds = new Set<string>();
+  for (const item of value.changes) {
+    if (
+      !isRecord(item) ||
+      typeof item.finding_id !== "string" ||
+      !item.finding_id ||
+      findingIds.has(item.finding_id) ||
+      !HISTORY_CHANGE_STATUSES.has(item.status as AnalysisHistoryComparisonStatus) ||
+      typeof item.label !== "string" ||
+      ![
+        item.baseline_value,
+        item.current_value,
+        item.absolute_delta,
+        item.relative_change_pct,
+      ].every((number) => number === null || isFiniteNumber(number)) ||
+      !(item.unit === null || typeof item.unit === "string") ||
+      !(item.source === null || typeof item.source === "string") ||
+      !(item.dimension === null || isRecord(item.dimension))
+    ) {
+      throw invalidHistoryContract("Geçmiş karşılaştırma değişiklik kaydı geçersiz.");
+    }
+    findingIds.add(item.finding_id);
+  }
+}
 
 function validateAgentResult(result: AgentResult | undefined): asserts result {
   validateDashboard(result?.dashboard);
@@ -746,6 +968,83 @@ export class LacBridgeClient {
     });
     const result = await this.decode<AgentResult>(response);
     validateAgentResult(result);
+    return result;
+  }
+
+  async analysisHistory(
+    options: { limit?: number; datasetId?: string; signal?: AbortSignal } = {}
+  ): Promise<AnalysisHistoryList> {
+    const limit = options.limit ?? 50;
+    if (!Number.isSafeInteger(limit) || limit < 1 || limit > 100) {
+      throw invalidHistoryContract("Geçmiş analiz limiti 1-100 olmalıdır.");
+    }
+    const parameters = new URLSearchParams({ limit: String(limit) });
+    if (options.datasetId) parameters.set("dataset_id", options.datasetId);
+    const response = await fetch(
+      `${this.baseUrl}/api/v1/analysis/history?${parameters.toString()}`,
+      { signal: options.signal }
+    );
+    const result = await this.decode<unknown>(response);
+    validateHistoryList(result);
+    return result;
+  }
+
+  async analysisHistoryRun(runId: string, signal?: AbortSignal): Promise<AnalysisHistoryRun> {
+    if (!HISTORY_RUN_ID.test(runId)) {
+      throw invalidHistoryContract("Geçmiş analiz kimliği geçersiz.");
+    }
+    const response = await fetch(`${this.baseUrl}/api/v1/analysis/history/${runId}`, { signal });
+    const envelope = await this.decode<unknown>(response);
+    if (!isRecord(envelope) || envelope.schema_version !== "analysis-history.v1") {
+      throw invalidHistoryContract("Geçmiş analiz kaydı sözleşmesi geçersiz.");
+    }
+    const run = envelope.run;
+    validateHistoryRun(run);
+    return run;
+  }
+
+  async deleteAnalysisHistoryRun(runId: string, signal?: AbortSignal): Promise<void> {
+    if (!HISTORY_RUN_ID.test(runId)) {
+      throw invalidHistoryContract("Silinecek geçmiş analiz kimliği geçersiz.");
+    }
+    const response = await fetch(`${this.baseUrl}/api/v1/analysis/history/${runId}`, {
+      method: "DELETE",
+      signal,
+    });
+    const result = await this.decode<unknown>(response);
+    if (
+      !isRecord(result) ||
+      result.status !== "deleted" ||
+      result.run_id !== runId ||
+      Object.keys(result).some((key) => !["status", "run_id"].includes(key))
+    ) {
+      throw invalidHistoryContract("Geçmiş analiz silme yanıtı geçersiz.");
+    }
+  }
+
+  async compareAnalysisHistory(
+    baselineRunId: string,
+    currentRunId: string,
+    signal?: AbortSignal
+  ): Promise<AnalysisHistoryComparison> {
+    if (
+      !HISTORY_RUN_ID.test(baselineRunId) ||
+      !HISTORY_RUN_ID.test(currentRunId) ||
+      baselineRunId === currentRunId
+    ) {
+      throw invalidHistoryContract("Karşılaştırma için iki farklı geçerli analiz seçilmelidir.");
+    }
+    const response = await fetch(`${this.baseUrl}/api/v1/analysis/history/compare`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        baseline_run_id: baselineRunId,
+        current_run_id: currentRunId,
+      }),
+      signal,
+    });
+    const result = await this.decode<unknown>(response);
+    validateHistoryComparison(result);
     return result;
   }
 

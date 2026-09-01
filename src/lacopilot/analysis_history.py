@@ -81,6 +81,31 @@ def _safe_finding(value: Any) -> dict[str, Any]:
     return safe
 
 
+def _comparison_contract(finding: dict[str, Any]) -> tuple[Any, ...]:
+    dimension = finding.get("dimension")
+    normalized_dimension = tuple(sorted(dimension.items())) if isinstance(dimension, dict) else None
+    return (
+        finding.get("kind"),
+        finding.get("unit"),
+        finding.get("source"),
+        normalized_dimension,
+    )
+
+
+def _numeric_delta(baseline: int | float, current: int | float) -> int | float:
+    if isinstance(baseline, int) and isinstance(current, int):
+        return current - baseline
+    delta = round(float(current) - float(baseline), 12)
+    return 0.0 if delta == 0 else delta
+
+
+def _relative_change_pct(baseline: int | float, delta: int | float) -> float | None:
+    if float(baseline) == 0:
+        return None
+    result = round((float(delta) / abs(float(baseline))) * 100, 6)
+    return 0.0 if result == 0 else result
+
+
 class AnalysisHistoryStore:
     """Local, deletable archive of verified finding manifests.
 
@@ -222,6 +247,188 @@ class AnalysisHistoryStore:
         with self._connect() as connection:
             cursor = connection.execute("DELETE FROM analysis_runs WHERE run_id=?", (run_id,))
         return cursor.rowcount == 1
+
+    def compare_runs(self, baseline_run_id: str, current_run_id: str) -> dict[str, Any]:
+        """Compare two archived verifier-passed finding manifests without reopening data.
+
+        The comparison is mechanical and evidence-only. It does not infer time-period meaning,
+        business importance or causality, and it never promotes an archived finding into a new run.
+        """
+
+        if baseline_run_id == current_run_id:
+            raise ValueError("Karşılaştırma için iki farklı analiz kaydı seçilmelidir")
+        baseline = self.get_run(baseline_run_id)
+        current = self.get_run(current_run_id)
+        if baseline is None:
+            raise KeyError(baseline_run_id)
+        if current is None:
+            raise KeyError(current_run_id)
+
+        baseline_findings = self._verified_findings(baseline)
+        current_findings = self._verified_findings(current)
+        baseline_index = {finding["finding_id"]: finding for finding in baseline_findings}
+        current_index = {finding["finding_id"]: finding for finding in current_findings}
+        changes: list[dict[str, Any]] = []
+
+        for finding_id in sorted(set(baseline_index) | set(current_index)):
+            before = baseline_index.get(finding_id)
+            after = current_index.get(finding_id)
+            if before is None:
+                changes.append(
+                    {
+                        "finding_id": finding_id,
+                        "status": "added",
+                        "label": after.get("label", finding_id),
+                        "baseline_value": None,
+                        "current_value": after["value"],
+                        "absolute_delta": None,
+                        "relative_change_pct": None,
+                        "unit": after.get("unit"),
+                        "source": after["source"],
+                        "dimension": after.get("dimension"),
+                    }
+                )
+                continue
+            if after is None:
+                changes.append(
+                    {
+                        "finding_id": finding_id,
+                        "status": "removed",
+                        "label": before.get("label", finding_id),
+                        "baseline_value": before["value"],
+                        "current_value": None,
+                        "absolute_delta": None,
+                        "relative_change_pct": None,
+                        "unit": before.get("unit"),
+                        "source": before["source"],
+                        "dimension": before.get("dimension"),
+                    }
+                )
+                continue
+            if _comparison_contract(before) != _comparison_contract(after):
+                incompatible_fields = [
+                    field
+                    for field in ("kind", "unit", "source", "dimension")
+                    if before.get(field) != after.get(field)
+                ]
+                changes.append(
+                    {
+                        "finding_id": finding_id,
+                        "status": "incompatible",
+                        "label": after.get("label", before.get("label", finding_id)),
+                        "baseline_value": before["value"],
+                        "current_value": after["value"],
+                        "absolute_delta": None,
+                        "relative_change_pct": None,
+                        "unit": None,
+                        "source": None,
+                        "dimension": None,
+                        "incompatible_fields": incompatible_fields,
+                    }
+                )
+                continue
+
+            delta = _numeric_delta(before["value"], after["value"])
+            status = "unchanged" if before["value"] == after["value"] else "changed"
+            changes.append(
+                {
+                    "finding_id": finding_id,
+                    "status": status,
+                    "label": after.get("label", before.get("label", finding_id)),
+                    "baseline_value": before["value"],
+                    "current_value": after["value"],
+                    "absolute_delta": 0 if status == "unchanged" else delta,
+                    "relative_change_pct": (
+                        0.0
+                        if status == "unchanged" and float(before["value"]) != 0
+                        else _relative_change_pct(before["value"], delta)
+                    ),
+                    "unit": after.get("unit"),
+                    "source": after["source"],
+                    "dimension": after.get("dimension"),
+                }
+            )
+
+        counts = {
+            status: sum(change["status"] == status for change in changes)
+            for status in ("changed", "unchanged", "added", "removed", "incompatible")
+        }
+        relation = (
+            "same_dataset_version"
+            if baseline["dataset_id"] == current["dataset_id"]
+            else (
+                "same_source_new_version"
+                if baseline["dataset_ref"] == current["dataset_ref"]
+                and baseline["sheet_name"] == current["sheet_name"]
+                else "different_sources"
+            )
+        )
+        manifest = {
+            "baseline_run_id": baseline_run_id,
+            "current_run_id": current_run_id,
+            "changes": changes,
+        }
+        digest = hashlib.sha256(
+            json.dumps(
+                manifest,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        ).hexdigest()
+        return {
+            "schema_version": "analysis-history-comparison.v1",
+            "status": "completed",
+            "baseline": self._comparison_run_ref(baseline),
+            "current": self._comparison_run_ref(current),
+            "dataset_relation": relation,
+            "period_semantics": "not_inferred",
+            "summary": {"total": len(changes), **counts},
+            "changes": changes,
+            "manifest_sha256": digest,
+            "verification": {
+                "status": "passed",
+                "scope": "archived_verified_finding_manifests",
+                "evidence_only": True,
+                "errors": [],
+            },
+        }
+
+    @staticmethod
+    def _verified_findings(run: dict[str, Any]) -> list[dict[str, Any]]:
+        if run.get("mode") != "agent" or run.get("verifier_status") != "passed":
+            raise ValueError("Yalnız verifier-passed Agent kayıtları karşılaştırılabilir")
+        raw_findings = run.get("findings")
+        if (
+            not isinstance(raw_findings, list)
+            or not 1 <= len(raw_findings) <= 48
+            or run.get("finding_count") != len(raw_findings)
+        ):
+            raise ValueError("History finding manifesti geçersiz")
+        findings = [_safe_finding(finding) for finding in raw_findings]
+        if len({finding["finding_id"] for finding in findings}) != len(findings):
+            raise ValueError("History finding manifesti tekrar eden finding_id içeriyor")
+        return findings
+
+    @staticmethod
+    def _comparison_run_ref(run: dict[str, Any]) -> dict[str, Any]:
+        return {
+            key: run[key]
+            for key in (
+                "run_id",
+                "dataset_id",
+                "dataset_ref",
+                "source_name",
+                "sheet_name",
+                "mode",
+                "question",
+                "run_status",
+                "verifier_status",
+                "finding_count",
+                "tools",
+                "created_at",
+            )
+        }
 
     @staticmethod
     def _decode_row(row: sqlite3.Row, *, include_findings: bool) -> dict[str, Any]:

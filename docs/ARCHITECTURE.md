@@ -1,86 +1,51 @@
-# Architecture 1.0 RC1
+# Canonical Product Architecture
+
+Status: **single-repository pre-release**
 
 ```text
-                    Browser UI / CLI
-                           |
-                        FastAPI
-                           |
-                    Conversation Store
-                           |
-                      Ollama Agent
-                 Fast / Main / Deep model
-                           |
-                  High-Level Tool Surface
-       +---------+---------+---------+---------+
-       |         |         |         |         |
-      Data    Analytics  Business    BI       NPL
-       |         |         |         |         |
-       +---------+----+----+---------+---------+
-                    |    |
-                 SQL/DB  Local RAG
-                    |    |
-                 Memory / Mentor
-                    |
-          Workspace Sandbox + Audit
+Tauri / Next UI
+      ↓ same-origin local proxy
+FastAPI Data Bridge
+      ├─ Quick: deterministic profile → dashboard → optional verified explanation
+      ├─ Analyst: explicit target → statistics → findings → verifier → reports
+      └─ Agent: Ollama planner → bounded typed tools → evidence → verifier → synthesis
 ```
 
-## Design principles
+## Trust boundary
 
-### 1. LLM ≠ calculation engine
-The language model decides what to inspect, which tool family to call and how to explain the result. Numeric/statistical calculations are performed by tested Python/SQL functions.
+The LLM is never the authoritative calculation engine. It may create a bounded typed plan and
+explain supplied evidence. Python/DuckDB/SciPy/statsmodels tools calculate; stable `finding_id` and
+source fields bind each numeric fact; independent validators decide what the UI and reports may
+show.
 
-### 2. Small high-level tool surface
-The implementation contains many internal methods, but the model sees a limited number of high-level tool families such as `analytics_engine`, `business_engine`, `bi_engine`, and `npl_engine`. This reduces tool-selection entropy.
+The Agent has no arbitrary Python, shell, PowerShell, SQL, filesystem, internet or raw-row-dump
+tool. Tool/failure budgets, duplicate-call protection, dependency validation and loop detection
+terminate unsafe or unproductive plans. Unsupported numbers and business/KPI/causality semantics
+fail closed.
 
-### 3. Local-first privacy
-- Workspace sandbox for file tools
-- Web disabled by default
-- Ollama loopback by default
-- Remote Ollama and cloud model tags blocked by default
-- Exact-argument approval queue for agent-requested writes/external calls
-- Optional API token
-- Database secrets only from environment variables
-- Read-only DB account strongly recommended
+## Data and evidence flow
 
-### 4. Human-approved learning
-The model can propose a candidate memory/business rule but cannot approve it through its agent tool surface. Promotion is a human action.
+1. CSV/XLSX is copied into the local workspace and parsed deterministically.
+2. Schema, roles, quality metrics and bounded aggregates are produced before model use.
+3. Quick/Analyst/Agent findings carry stable IDs and deterministic sources.
+4. Verifier-passed Agent manifests may be stored locally without raw rows or internal model prompts.
+5. Two archived manifests may be compared mechanically; period/business meaning is not inferred.
+6. Excel/HTML/PDF reports are generated from one verified manifest and reopened for validation.
 
-### 5. OpenClaw optional
-OpenClaw is useful as an orchestration/scheduling/skill layer, but deterministic analytics and the FastAPI service remain independent.
+## Desktop lifecycle
 
-### 6. No arbitrary shell/Python tool in the LLM surface
-A local model being “local” does not make arbitrary execution safe. The LLM receives narrow functions instead of unrestricted terminal access.
+The canonical launcher manages the analytics backend and Next UI. The packaged Tauri shell uses
+loopback-only ephemeral ports, a per-launch local API token, relative packaged resource paths and
+owned-child cleanup. The packaged backend is a PyInstaller resource; the UI server is a bundled Node
+sidecar. Ollama is local and optional for deterministic Quick/Analyst operation.
 
-## Data flow
+## Local storage
 
-```text
-User question
-   |
-   +--> inspect/profile data if unfamiliar
-   |
-   +--> select analysis family
-   |
-   +--> deterministic tool executes
-         (or queues a write/external call for human approval)
-   |
-   +--> bounded result returned to LLM
-   |
-   +--> LLM explains in selected personality/mentor level
-   |
-   +--> audit + local conversation history
-```
+- Workspace, outputs, logs, config and history are local and Git-ignored.
+- History is deletable and project/dataset fingerprinted.
+- Archived evidence is never promoted into a current analysis automatically.
+- Company definitions require explicit approved metadata; a column name is not a KPI definition.
 
-## RAG flow
-
-```text
-workspace/knowledge document
-      -> extract text
-      -> chunk
-      -> SQLite FTS5
-      -> optional local Ollama embeddings
-      -> retrieved path/chunk
-      -> LLM source-grounded explanation
-```
-
-## Remote access
-Remote use is deliberately not bundled as public hosting. Keep the app on loopback unless using a private authenticated network/VPN + firewall + company approval. See `REMOTE_ACCESS.md`.
+Detailed Agent design: [`ADR-001-agent-core.md`](ADR-001-agent-core.md). Privacy controls:
+[`PRIVACY_AND_SECURITY.md`](PRIVACY_AND_SECURITY.md). Release gates:
+[`RELEASE_CHECKLIST.md`](RELEASE_CHECKLIST.md).

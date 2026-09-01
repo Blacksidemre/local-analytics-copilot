@@ -96,11 +96,11 @@ function AdoptionPanel({ manifest }: { manifest: ExportManifest }) {
           </button>
           <a
             className="hover:underline"
-            href="https://github.com/achalp/hermetic"
+            href="https://github.com/Blacksidemre/local-analytics-copilot"
             target="_blank"
             rel="noreferrer"
           >
-            Analyzed with hermetic — your data stays home
+            Analyzed with Local Analytics Copilot — evidence stays local
           </a>
         </span>
       </div>
@@ -110,27 +110,28 @@ function AdoptionPanel({ manifest }: { manifest: ExportManifest }) {
             This dashboard was produced by{" "}
             <a
               className="text-accent-text hover:underline"
-              href="https://github.com/achalp/hermetic"
+              href="https://github.com/Blacksidemre/local-analytics-copilot"
               target="_blank"
               rel="noreferrer"
             >
-              hermetic
+              Local Analytics Copilot
             </a>
-            , an open-source, local-first AI data analyst: the model writes the analysis code, but
-            it never sees your data.
+            , a local-first, evidence-backed data analyst: deterministic tools calculate, the
+            verifier checks, and the model only plans or explains.
           </p>
           <p className="mb-2">
             To ask your own questions of your own data:{" "}
             <code className="rounded-badge bg-surface-2 px-1 py-0.5 text-xs">
-              git clone https://github.com/achalp/hermetic && cd hermetic && ./start.sh
+              git clone https://github.com/Blacksidemre/local-analytics-copilot && cd
+              local-analytics-copilot
             </code>
           </p>
           <p>
-            Claude Desktop / Claude Code users:{" "}
+            Setup and local-model instructions:{" "}
             <code className="rounded-badge bg-surface-2 px-1 py-0.5 text-xs">
-              ./scripts/install-mcp.sh
+              docs/KURULUM_VE_KULLANIM_TR.md
             </code>{" "}
-            gives your agent these analysis tools directly.
+            in the canonical repository.
           </p>
         </div>
       )}
