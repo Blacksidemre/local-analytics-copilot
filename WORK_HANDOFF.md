@@ -1,6 +1,6 @@
 # Work Handoff
 
-Updated: 2026-08-31
+Updated: 2026-09-01
 
 Branch: `hermetic-hybrid-integration`
 
@@ -59,8 +59,15 @@ consolidation; end users no longer need to clone it.
   unapproved business/KPI meaning and prompt injection in dataset values;
 - deterministic Quick Dashboard fallback when Ollama/planner is unavailable.
 
+Verifier-passed Agent runs now have evidence-only Excel, HTML and PDF exports through
+`POST /api/v1/analysis/agent/report`. All three formats use the same archived finding manifest and
+SHA-256 digest, are reopened and validated before download, and exclude raw rows and unverified
+model prose. Formula injection, scripts/external resources, duplicate or altered evidence and
+unverified history fail closed.
+
 The Agent UI shows the active dataset, optional explicit target semantics, plan steps, progress,
-verified evidence, verifier result, safe synthesis and recoverable local-model errors.
+verified evidence, verifier result, safe synthesis, evidence-report downloads and recoverable
+local-model errors.
 
 ## Local model management
 
@@ -75,7 +82,8 @@ Verified Agent runs can be stored in local `workspace/analysis_history.sqlite3` 
 opened or deleted through typed API routes. Storage keeps only the dataset-local fingerprint,
 request summary, used tool names and a maximum of 48 verifier-passed findings. It does not retain
 raw rows, model prompts, tool arguments or secrets, and archived findings are not automatically
-promoted to evidence for a later run.
+promoted to evidence for a later run. The report endpoint projects only an explicitly requested,
+verifier-passed archived run; it does not rerun a tool or reopen the dataset.
 
 Company rules still follow the existing candidate -> explicit human approval -> approved memory
 flow. Full cross-session conversational/project-history UX and period comparison remain future
@@ -108,10 +116,11 @@ work; the current storage layer is deliberately a safe foundation rather than au
 
 ```text
 Python suite excluding the known local Polars and DuckDB binary crashes:
-  118 passed, 1 skipped (PowerShell absent), 2 deselected
+  121 passed, 1 skipped (PowerShell absent), 2 deselected
+  coverage 74.71% (required minimum 60%)
 
-Agent/history/API targeted tests:
-  PASS
+Agent/history/report/API targeted tests:
+  8 passed
 
 Canonical launcher + packaging contract:
   7 passed
@@ -126,13 +135,16 @@ Desktop TypeScript:
   PASS
 
 Desktop bridge/UI/proxy/launcher Vitest:
-  44 passed
+  48 passed
 
 Offline production font contract:
   PASS (no build-time Google Fonts request)
 
 Canonical Next production build:
   PASS (69 routes/pages, telemetry and network proxies disabled)
+
+Python sdist/wheel + dependency check:
+  PASS
 
 git diff --check:
   PASS
@@ -145,6 +157,12 @@ known tests are deselected; GitHub Linux/Windows jobs run the complete suite on 
 The canonical Next production build passes with an in-tree dependency tree. Geist and Geist Mono
 are bundled from the existing `@fontsource-variable` packages, so an offline build no longer makes
 a Google Fonts request.
+
+The complete inherited Hermetic Vitest inventory was not run to completion in this managed
+workspace because one unrelated cloud-credential test attempted to contact
+`metadata.google.internal` and was blocked by the environment security boundary. The canonical
+CI-selected bridge, Agent UI, proxy, launcher and offline-build tests all passed without network
+access.
 
 Rust/Cargo and PyInstaller are not installed in this Linux workspace. Windows CI therefore owns
 the Rust `cargo check --locked`, packaged-backend build and executable health smoke. This is not a
@@ -159,8 +177,8 @@ claim that the final installed Tauri application passed on the user's physical W
 3. Install Visual Studio Build Tools (`Desktop development with C++`, MSVC and Windows SDK) and
    complete the physical `pnpm desktop:dev` Tauri acceptance.
 4. Build and test the Windows installer/package on the physical target machine.
-5. Add Agent-native report export and fuller history/project comparison UX before stable v1.0 if
-   they are considered release requirements rather than post-v1 scope.
+5. Add fuller history/project comparison UX before stable v1.0 if it is considered a release
+   requirement rather than post-v1 scope.
 
 ## Minimum later Windows acceptance
 

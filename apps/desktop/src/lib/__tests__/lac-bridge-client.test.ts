@@ -522,6 +522,86 @@ describe("LacBridgeClient", () => {
     expect(JSON.parse(String(init?.body)).output_name).toBe(contract.filename);
   });
 
+  it.each([
+    {
+      format: "xlsx" as const,
+      mediaType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+      schema: "agent-report.v1",
+      filename: "agent_report.xlsx",
+      body: new Uint8Array([0x50, 0x4b, 0x03, 0x04, 1]),
+    },
+    {
+      format: "html" as const,
+      mediaType: "text/html; charset=utf-8",
+      schema: "agent-html-report.v1",
+      filename: "agent_report.html",
+      body: "<!doctype html><html><body>verified</body></html>",
+    },
+    {
+      format: "pdf" as const,
+      mediaType: "application/pdf",
+      schema: "agent-pdf-report.v1",
+      filename: "agent_report.pdf",
+      body: "%PDF-1.7 verified",
+    },
+  ])("downloads only a verifier-passed Agent $format evidence contract", async (contract) => {
+    mockFetch.mockResolvedValue(
+      new Response(contract.body, {
+        status: 200,
+        headers: {
+          "Content-Type": contract.mediaType,
+          "Content-Disposition": `attachment; filename="${contract.filename}"`,
+          "X-LAC-Report-Schema": contract.schema,
+          "X-LAC-Report-Verification": "passed",
+          "X-LAC-Report-Findings": "5",
+          "X-LAC-Report-Cards": "0",
+        },
+      })
+    );
+
+    const result = await new LacBridgeClient().agentReport("a".repeat(32), contract.format);
+
+    expect(result).toMatchObject({
+      format: contract.format,
+      schemaVersion: contract.schema,
+      filename: contract.filename,
+      verification: { status: "passed", findingCount: 5, dashboardCardCount: 0 },
+    });
+    const [url, init] = mockFetch.mock.calls[0];
+    expect(url).toBe("/api/lac/api/v1/analysis/agent/report");
+    expect(JSON.parse(String(init?.body))).toEqual({
+      run_id: "a".repeat(32),
+      format: contract.format,
+      output_name: contract.filename,
+    });
+  });
+
+  it("rejects an Agent report that claims dashboard cards or an invalid run ID", async () => {
+    await expect(new LacBridgeClient().agentReport("not-a-run", "xlsx")).rejects.toMatchObject({
+      status: 400,
+      detail: { code: "invalid_agent_report_run_id" },
+    });
+    expect(mockFetch).not.toHaveBeenCalled();
+
+    mockFetch.mockResolvedValue(
+      new Response(new Uint8Array([0x50, 0x4b, 0x03, 0x04]), {
+        status: 200,
+        headers: {
+          "Content-Type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+          "Content-Disposition": 'attachment; filename="agent_report.xlsx"',
+          "X-LAC-Report-Schema": "agent-report.v1",
+          "X-LAC-Report-Verification": "passed",
+          "X-LAC-Report-Findings": "5",
+          "X-LAC-Report-Cards": "1",
+        },
+      })
+    );
+    await expect(new LacBridgeClient().agentReport("a".repeat(32), "xlsx")).rejects.toMatchObject({
+      status: 502,
+      detail: { code: "invalid_agent_report_contract" },
+    });
+  });
+
   it("rejects a PDF download with valid headers but invalid file magic", async () => {
     mockFetch.mockResolvedValue(
       new Response("<!doctype html>", {

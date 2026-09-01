@@ -196,6 +196,18 @@ export type AnalystReportDownload = {
   };
 };
 
+export type AgentReportDownload = {
+  format: AnalystReportFormat;
+  schemaVersion: "agent-report.v1" | "agent-html-report.v1" | "agent-pdf-report.v1";
+  filename: string;
+  blob: Blob;
+  verification: {
+    status: "passed";
+    findingCount: number;
+    dashboardCardCount: 0;
+  };
+};
+
 export type AgentToolName =
   | "profile_dataset"
   | "screen_target_associations"
@@ -284,6 +296,11 @@ type AnalystReportOptions = {
   signal?: AbortSignal;
 };
 
+type AgentReportOptions = {
+  outputName?: string;
+  signal?: AbortSignal;
+};
+
 const ANALYST_REPORT_FORMATS = {
   xlsx: {
     path: "/api/v1/analysis/analyst/report",
@@ -302,6 +319,24 @@ const ANALYST_REPORT_FORMATS = {
     extension: ".pdf",
     mediaType: "application/pdf",
     schemaVersion: "analyst-pdf-report.v1",
+  },
+} as const;
+
+const AGENT_REPORT_FORMATS = {
+  xlsx: {
+    extension: ".xlsx",
+    mediaType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    schemaVersion: "agent-report.v1",
+  },
+  html: {
+    extension: ".html",
+    mediaType: "text/html",
+    schemaVersion: "agent-html-report.v1",
+  },
+  pdf: {
+    extension: ".pdf",
+    mediaType: "application/pdf",
+    schemaVersion: "agent-pdf-report.v1",
   },
 } as const;
 
@@ -712,6 +747,74 @@ export class LacBridgeClient {
     const result = await this.decode<AgentResult>(response);
     validateAgentResult(result);
     return result;
+  }
+
+  async agentReport(
+    runId: string,
+    format: AnalystReportFormat,
+    options: AgentReportOptions = {}
+  ): Promise<AgentReportDownload> {
+    if (!/^[0-9a-f]{32}$/.test(runId)) {
+      const detail: BridgeErrorDetail = {
+        code: "invalid_agent_report_run_id",
+        message: "Agent raporu için geçerli bir yerel analiz kaydı gerekli.",
+        hint: "Agent analizini yeniden çalıştırıp doğrulanmış kaydı kullanın.",
+        details: {},
+      };
+      throw new LacBridgeError(detail.message, 400, detail);
+    }
+    const contract = AGENT_REPORT_FORMATS[format];
+    const response = await fetch(`${this.baseUrl}/api/v1/analysis/agent/report`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Accept: contract.mediaType,
+      },
+      body: JSON.stringify({
+        run_id: runId,
+        format,
+        output_name: options.outputName ?? `agent_report${contract.extension}`,
+      }),
+      signal: options.signal,
+    });
+    if (!response.ok) await this.decode<never>(response);
+    const contentType = response.headers.get("content-type") ?? "";
+    const schemaVersion = response.headers.get("x-lac-report-schema");
+    const verificationStatus = response.headers.get("x-lac-report-verification");
+    const filename = reportFilename(response, contract.extension);
+    const findingCount = Number(response.headers.get("x-lac-report-findings"));
+    const dashboardCardCount = Number(response.headers.get("x-lac-report-cards"));
+    const blob = await response.blob();
+    const validMagic = await hasReportMagic(blob, format);
+    if (
+      !contentType.startsWith(contract.mediaType) ||
+      schemaVersion !== contract.schemaVersion ||
+      verificationStatus !== "passed" ||
+      !filename ||
+      !Number.isSafeInteger(findingCount) ||
+      findingCount < 1 ||
+      dashboardCardCount !== 0 ||
+      !validMagic
+    ) {
+      const detail: BridgeErrorDetail = {
+        code: "invalid_agent_report_contract",
+        message: `Agent ${format.toUpperCase()} raporu doğrulanmış indirme sözleşmesini geçmedi.`,
+        hint: null,
+        details: {},
+      };
+      throw new LacBridgeError(detail.message, 502, detail);
+    }
+    return {
+      format,
+      schemaVersion: contract.schemaVersion,
+      filename,
+      blob,
+      verification: {
+        status: "passed",
+        findingCount,
+        dashboardCardCount: 0,
+      },
+    };
   }
 
   async analystReport(

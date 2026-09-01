@@ -111,8 +111,32 @@ def test_agent_api_runs_local_planner_and_returns_verified_fallback(tmp_path, mo
     archived = TestClient(app).get(f"/api/v1/analysis/history/{run_id}").json()
     assert archived["run"]["verifier_status"] == "passed"
     assert archived["run"]["findings"]
+
+    report_contracts = {
+        "xlsx": ("agent-report.v1", b"PK\x03\x04"),
+        "html": ("agent-html-report.v1", b"<!doctype html>"),
+        "pdf": ("agent-pdf-report.v1", b"%PDF-"),
+    }
+    for report_format, (schema, magic) in report_contracts.items():
+        report = TestClient(app).post(
+            "/api/v1/analysis/agent/report",
+            json={"run_id": run_id, "format": report_format},
+        )
+        assert report.status_code == 200
+        assert report.headers["x-lac-report-schema"] == schema
+        assert report.headers["x-lac-report-verification"] == "passed"
+        assert int(report.headers["x-lac-report-findings"]) == len(archived["run"]["findings"])
+        assert report.headers["x-lac-report-cards"] == "0"
+        assert report.content.startswith(magic)
+
     deleted = TestClient(app).delete(f"/api/v1/analysis/history/{run_id}")
     assert deleted.status_code == 200
+    missing_report = TestClient(app).post(
+        "/api/v1/analysis/agent/report",
+        json={"run_id": run_id, "format": "xlsx"},
+    )
+    assert missing_report.status_code == 404
+    assert missing_report.json()["detail"]["code"] == "history_run_not_found"
 
 
 def test_agent_api_model_unavailable_keeps_deterministic_dashboard(tmp_path, monkeypatch):

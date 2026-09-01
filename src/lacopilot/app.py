@@ -12,6 +12,7 @@ from pydantic import BaseModel, Field
 
 from lacopilot import __version__
 from lacopilot.actions import ActionStore
+from lacopilot.agent_report import create_agent_report
 from lacopilot.analysis_history import AnalysisHistoryStore
 from lacopilot.analyst_document_reports import (
     create_analyst_html_report,
@@ -125,6 +126,12 @@ class AgentAnalysisRequest(DatasetProfileRequest):
     language: Literal["tr", "en"] = "tr"
     model: str | None = Field(default=None, max_length=200)
     save_history: bool = True
+
+
+class AgentReportRequest(BaseModel):
+    run_id: str = Field(pattern=r"^[0-9a-f]{32}$")
+    format: Literal["xlsx", "html", "pdf"]
+    output_name: str | None = Field(default=None, min_length=1, max_length=200)
 
 
 class KnowledgeIngestRequest(BaseModel):
@@ -543,6 +550,42 @@ def delete_analysis_history_run(run_id: str):
             detail={"code": "history_run_not_found", "message": "Analiz kaydı bulunamadı."},
         )
     return {"status": "deleted", "run_id": run_id}
+
+
+@app.post("/api/v1/analysis/agent/report")
+def agent_report(req: AgentReportRequest):
+    run = _analysis_history().get_run(req.run_id)
+    if run is None:
+        raise HTTPException(
+            status_code=404,
+            detail={"code": "history_run_not_found", "message": "Analiz kaydı bulunamadı."},
+        )
+    try:
+        report = create_agent_report(run, req.format, req.output_name)
+        settings = get_settings()
+        output = resolve_workspace_path(settings.workspace, report["output"])
+        verification = report["verification"]
+        return FileResponse(
+            output,
+            media_type=report["media_type"],
+            filename=report["filename"],
+            headers={
+                "X-LAC-Report-Schema": report["schema_version"],
+                "X-LAC-Report-Verification": verification["status"],
+                "X-LAC-Report-Findings": str(verification["finding_count"]),
+                "X-LAC-Report-Cards": str(verification["dashboard_card_count"]),
+            },
+        )
+    except (KeyError, PermissionError, ValueError) as exc:
+        raise HTTPException(
+            status_code=422,
+            detail={"code": "invalid_agent_report_request", "message": str(exc)},
+        ) from exc
+    except RuntimeError as exc:
+        raise HTTPException(
+            status_code=500,
+            detail={"code": "report_verification_failed", "message": str(exc)},
+        ) from exc
 
 
 def _verified_analyst_report_response(

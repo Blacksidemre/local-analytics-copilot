@@ -28,7 +28,17 @@ type ReadyAnalysis = {
 };
 
 type ActiveOperation =
-  "upload" | "sheet" | "quick" | "analyst" | "agent" | "report-xlsx" | "report-html" | "report-pdf";
+  | "upload"
+  | "sheet"
+  | "quick"
+  | "analyst"
+  | "agent"
+  | "report-xlsx"
+  | "report-html"
+  | "report-pdf"
+  | "agent-report-xlsx"
+  | "agent-report-html"
+  | "agent-report-pdf";
 
 const DEFAULT_QUESTION = "Bu veri setinin hızlı profilini Türkçe ve kanıta bağlı biçimde yorumla.";
 const REPORT_LABELS: Record<AnalystReportFormat, string> = {
@@ -45,6 +55,9 @@ const OPERATION_LABELS: Record<ActiveOperation, string> = {
   "report-xlsx": "Doğrulanmış Excel raporu hazırlanıyor...",
   "report-html": "Doğrulanmış HTML raporu hazırlanıyor...",
   "report-pdf": "Doğrulanmış PDF raporu hazırlanıyor...",
+  "agent-report-xlsx": "Agent kanıtlarından Excel raporu hazırlanıyor...",
+  "agent-report-html": "Agent kanıtlarından HTML raporu hazırlanıyor...",
+  "agent-report-pdf": "Agent kanıtlarından PDF raporu hazırlanıyor...",
 };
 
 function fallbackError(error: unknown): BridgeErrorDetail {
@@ -109,6 +122,7 @@ export function LacQuickWorkspace() {
   const [analyst, setAnalyst] = useState<AnalystResult | null>(null);
   const [agent, setAgent] = useState<AgentResult | null>(null);
   const [reportStatus, setReportStatus] = useState("");
+  const [agentReportStatus, setAgentReportStatus] = useState("");
   const [targetColumn, setTargetColumn] = useState("");
   const [targetKind, setTargetKind] = useState<"" | AnalystTargetKind>("");
 
@@ -170,6 +184,7 @@ export function LacQuickWorkspace() {
     setAnalyst(null);
     setAgent(null);
     setReportStatus("");
+    setAgentReportStatus("");
     setTargetColumn("");
     setTargetKind("");
     setSheetOptions([]);
@@ -219,6 +234,7 @@ export function LacQuickWorkspace() {
       setAnalyst(null);
       setAgent(null);
       setReportStatus("");
+      setAgentReportStatus("");
       setTargetColumn("");
       setTargetKind("");
       setReady({
@@ -291,6 +307,7 @@ export function LacQuickWorkspace() {
     const controller = startRequest("agent");
     const approvedTargetKind =
       targetKind || (targetColumn && selectedTarget?.unique === 2 ? "binary" : undefined);
+    setAgentReportStatus("");
     try {
       const result = await client.agent(ready.filePath, question.trim(), {
         sheetName: ready.selectedSheet,
@@ -301,6 +318,35 @@ export function LacQuickWorkspace() {
         signal: controller.signal,
       });
       setAgent(result);
+    } catch (caught) {
+      if (!controller.signal.aborted) setError(fallbackError(caught));
+    } finally {
+      finishRequest(controller);
+    }
+  };
+
+  const downloadAgentReport = async (format: AnalystReportFormat) => {
+    if (agent?.history?.status !== "saved") return;
+    const controller = startRequest(`agent-report-${format}`);
+    setAgentReportStatus("");
+    try {
+      const result = await client.agentReport(agent.history.run_id, format, {
+        signal: controller.signal,
+      });
+      const objectUrl = URL.createObjectURL(result.blob);
+      try {
+        const anchor = document.createElement("a");
+        anchor.href = objectUrl;
+        anchor.download = result.filename;
+        document.body.appendChild(anchor);
+        anchor.click();
+        anchor.remove();
+      } finally {
+        URL.revokeObjectURL(objectUrl);
+      }
+      setAgentReportStatus(
+        `Doğrulanmış Agent ${REPORT_LABELS[format]} raporu indirildi: ${result.filename}`
+      );
     } catch (caught) {
       if (!controller.signal.aborted) setError(fallbackError(caught));
     } finally {
@@ -359,6 +405,7 @@ export function LacQuickWorkspace() {
     setAnalyst(null);
     setAgent(null);
     setReportStatus("");
+    setAgentReportStatus("");
     setTargetColumn("");
     setTargetKind("");
     if (inputRef.current) inputRef.current.value = "";
@@ -823,9 +870,40 @@ export function LacQuickWorkspace() {
                     </div>
                   )}
                   {agent.history?.status === "saved" && (
-                    <p className="text-xs text-t-tertiary">
-                      Doğrulanmış bulgu manifesti yerel analiz geçmişine kaydedildi.
-                    </p>
+                    <div className="border border-border-default bg-surface-0 px-4 py-4">
+                      <div className="flex flex-wrap items-center justify-between gap-3">
+                        <div>
+                          <p className="text-xs font-medium text-t-primary">
+                            Doğrulanmış Agent raporları
+                          </p>
+                          <p className="mt-1 text-[11px] leading-5 text-t-tertiary">
+                            Yerel geçmişteki verifier-passed kanıtlardan üretilir; ham satırlar ve
+                            modelin doğrulanmamış metni rapora alınmaz.
+                          </p>
+                        </div>
+                        <div className="flex flex-wrap gap-2">
+                          {(["xlsx", "html", "pdf"] as const).map((format) => (
+                            <button
+                              key={format}
+                              type="button"
+                              disabled={busy}
+                              onClick={() => void downloadAgentReport(format)}
+                              className="border border-accent px-3 py-2 text-xs font-medium text-accent hover:bg-accent-subtle disabled:opacity-50"
+                              style={{ borderRadius: "var(--radius-button)" }}
+                            >
+                              {activeOperation === `agent-report-${format}`
+                                ? `${REPORT_LABELS[format]} hazırlanıyor...`
+                                : `Doğrulanmış Agent ${REPORT_LABELS[format]} raporunu indir`}
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+                      {agentReportStatus && (
+                        <p className="mt-3 border border-success-border bg-success-subtle px-3 py-2 text-sm text-success-text">
+                          {agentReportStatus}
+                        </p>
+                      )}
+                    </div>
                   )}
                   {agent.agent.synthesis && agent.agent.synthesis.status !== "completed" && (
                     <div className="border border-warning-border bg-warning-bg px-4 py-3 text-sm text-warning-text">

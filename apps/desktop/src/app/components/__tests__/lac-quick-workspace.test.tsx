@@ -8,6 +8,7 @@ const bridge = vi.hoisted(() => ({
   quick: vi.fn(),
   analyst: vi.fn(),
   agent: vi.fn(),
+  agentReport: vi.fn(),
   analystReport: vi.fn(),
   analystHtmlReport: vi.fn(),
   analystPdfReport: vi.fn(),
@@ -235,6 +236,7 @@ beforeEach(() => {
   bridge.quick.mockReset();
   bridge.analyst.mockReset();
   bridge.agent.mockReset();
+  bridge.agentReport.mockReset();
   bridge.analystReport.mockReset();
   bridge.analystHtmlReport.mockReset();
   bridge.analystPdfReport.mockReset();
@@ -453,6 +455,19 @@ describe("LacQuickWorkspace", () => {
       manifest: {},
     });
     bridge.agent.mockResolvedValue(agentResult);
+    bridge.agentReport.mockResolvedValue({
+      format: "xlsx",
+      schemaVersion: "agent-report.v1",
+      filename: "agent_report.xlsx",
+      blob: new Blob(["xlsx"]),
+      verification: { status: "passed", findingCount: 5, dashboardCardCount: 0 },
+    });
+    class DownloadURL extends URL {
+      static createObjectURL = vi.fn(() => "blob:agent-report");
+      static revokeObjectURL = vi.fn();
+    }
+    vi.stubGlobal("URL", DownloadURL);
+    vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(() => undefined);
     const { container } = render(<LacQuickWorkspace />);
 
     const input = container.querySelector('input[type="file"]') as HTMLInputElement;
@@ -477,6 +492,16 @@ describe("LacQuickWorkspace", () => {
     expect(screen.getByText(/Veri profili/)).toBeInTheDocument();
     expect(screen.getByText("Doğrulanmış Agent özeti")).toBeInTheDocument();
     expect(screen.getByText("Veri setinde 1.508 satır bulunuyor.")).toBeInTheDocument();
+    expect(screen.getByText("Doğrulanmış Agent raporları")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Doğrulanmış Agent Excel raporunu indir" }));
+    await waitFor(() => expect(bridge.agentReport).toHaveBeenCalledTimes(1));
+    expect(bridge.agentReport).toHaveBeenCalledWith("a".repeat(32), "xlsx", {
+      signal: expect.any(AbortSignal),
+    });
+    expect(
+      await screen.findByText("Doğrulanmış Agent Excel raporu indirildi: agent_report.xlsx")
+    ).toBeInTheDocument();
   });
 
   it("requires an explicit statistical kind for a non-binary target", async () => {
