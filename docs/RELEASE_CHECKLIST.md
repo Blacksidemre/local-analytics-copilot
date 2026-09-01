@@ -28,6 +28,8 @@ CI item does not replace physical Windows acceptance.
 - [x] Verifier failure prevents trusted model prose from being shown.
 - [x] Excel/HTML/PDF reports preserve a shared verified manifest.
 - [x] Output files are reopened and validated.
+- [x] One-command synthetic CSV/XLSX acceptance verifies Quick/Analyst parity, deterministic
+      fallback and cross-format Analyst manifest binding.
 
 ## 3. Bounded Agent
 
@@ -39,6 +41,7 @@ CI item does not replace physical Windows acceptance.
 - [x] Adversarial regression suite covers prompt injection and tool-abuse classes.
 - [ ] Run controlled CSV Agent acceptance with a real local Ollama model on Windows.
 - [ ] Run equivalent XLSX Agent acceptance and verify parity.
+- [ ] Run `.\scripts\run_release_acceptance.ps1 -LiveAgent` on the target Windows candidate.
 
 ## 4. Local history and privacy
 

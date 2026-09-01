@@ -10,12 +10,13 @@ Release status: **pre-release — physical Windows acceptance pending**
 
 ## Git and governance
 
-- The first canonical product promotion was merged through protected-branch PR #4.
+- The canonical product and the verified history/comparison follow-up were merged through protected
+  branch pull requests; no direct protected-branch write was used.
 - Promotion method: normal merge commit; no force push, history rewrite or direct ruleset bypass.
-- Promoted `main` checkpoint: `d201f197d17873b7a7b0f36013e81ae3e5cde56e`.
-- Main GitHub Actions Run 27 passed all five required jobs.
-- Follow-up history/comparison and documentation cleanup is developed on the integration branch and
-  must pass its PR CI before the next protected `main` merge.
+- Current promoted `main` checkpoint: `e51b9f87402ceeb18bab511d7ed421ff582f7fb0`.
+- Main GitHub Actions Run 34 passed all five required jobs.
+- The next integration candidate adds a one-command release acceptance gate and must pass its own
+  GitHub Actions run before another protected `main` promotion.
 - The old `Blacksidemre/hermetic` repository is historical/reference only. It is not a runtime,
   build or package dependency and receives no new product work.
 - `achalp/hermetic` remains read-only; no PR, issue or write was sent upstream.
@@ -58,6 +59,9 @@ Verifier-passed Agent runs can generate Excel, HTML and PDF from one archived ev
 All formats share the same SHA-256 binding and numeric findings, are reopened for validation and
 exclude raw rows and unverified model prose.
 
+The Analyst Excel workbook now embeds the same verified evidence manifest SHA-256 used by HTML and
+PDF in its package metadata. Reopen validation rejects a removed or changed workbook binding.
+
 ## History and deterministic comparison
 
 - Verifier-passed Agent runs can be listed, opened and explicitly deleted in the desktop UI.
@@ -96,24 +100,20 @@ exclude raw rows and unverified model prose.
 
 ```text
 Python Ruff format/lint: PASS
-Python regression: 125 passed, 1 skipped (PowerShell unavailable)
-Python coverage: 75.74% (required 60%)
+Release acceptance + Analyst targeted regression: 17 passed
+Excel manifest tamper + report/acceptance targeted regression: 4 passed
+Python broad regression before optional-native install: 126 passed, 1 skipped, 1 environment failure
+Python coverage: 75.69% (required 60%)
 Python sdist/wheel: PASS
 Python dependency check: PASS
-
-History/Agent API targeted Python: 7 passed
-Desktop bridge/history + UI targeted Vitest: 34 passed
-Desktop TypeScript: PASS
-Modified desktop ESLint: PASS
-Desktop/root Prettier: PASS
+Release acceptance offline mode: PASS with live-Agent skip
 git diff --check: PASS
 ```
 
-The Next production build compiled successfully and entered its post-compile checks locally, but the
-managed environment stopped the process when an inherited provider path attempted a prohibited
-network/metadata probe. The broad inherited desktop test inventory was stopped for the same safety
-reason. This was not bypassed. The changed bridge/UI tests are green; the clean GitHub Actions
-desktop-contract build and selected offline tests are the authoritative final gate.
+The broad regression's only failure was caused by the isolated environment initially lacking the
+optional DuckDB package. Installing the optional DuckDB/Polars/PyArrow wheels then reproduced the
+known managed-runtime native CPU `Bus error` on import, before test code could execute. This is an
+environment blocker, not hidden as a pass; clean GitHub Linux/Windows runners remain authoritative.
 
 Rust/Cargo and physical Windows are unavailable in this Linux workspace. The last promoted main CI
 passed Windows Tauri `cargo check --locked` plus packaged backend executable health smoke, but those
@@ -121,7 +121,8 @@ checks do not prove a physically installed desktop application.
 
 ## Remaining release blockers
 
-1. Integration candidate and follow-up protected `main` PR CI must be green.
+1. The release-acceptance integration candidate and any follow-up protected `main` PR CI must be
+   green.
 2. Run controlled CSV and XLSX Agent requests with the configured real local Ollama model.
 3. Install Visual Studio Build Tools (`Desktop development with C++`), MSVC and Windows SDK.
 4. Run physical Tauri startup, upload, Agent, verifier, report and shutdown acceptance.
@@ -135,12 +136,13 @@ From only the canonical repository:
 git switch main
 git pull
 pnpm desktop:install
+.\scripts\run_release_acceptance.ps1 -LiveAgent
 pnpm desktop:dev
 ```
 
-Upload the controlled CSV and XLSX fixture, run one natural-language Agent request on each, confirm
-the verifier passes and download one verified report. After developer E2E passes, run
-`pnpm desktop:build` and execute the installer checklist. No second repository or second terminal is
-required.
+The acceptance command generates its own controlled CSV/XLSX, verifies deterministic parity and
+reports, and requires the live local Agent chain. Then use `pnpm desktop:dev` for the physical native
+window/lifecycle check. After developer E2E passes, run `pnpm desktop:build` and execute the installer
+checklist. No second repository or second terminal is required.
 
 Do not publish stable `v1.0.0` until every physical gate in `docs/RELEASE_CHECKLIST.md` is evidenced.

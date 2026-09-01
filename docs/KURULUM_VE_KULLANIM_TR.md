@@ -555,8 +555,8 @@ Gerçek kullanıma geçmeden önce hepsinin doğru olduğundan emin olun:
 - [ ] `ollama list` içinde `qwen3.5:9b` var.
 - [ ] `lac doctor` Ollama'ya ulaşıyor.
 - [ ] `lac privacy-check` web, remote ve cloud için güvenli durumu gösteriyor.
-- [ ] Repodaki güncel otomatik test paketi geçti.
-- [ ] Sentetik demo analizi ve dashboard üretimi çalıştı.
+- [ ] `.\scripts\run_release_acceptance.ps1 -LiveAgent` kontrollü CSV/XLSX, rapor ve gerçek yerel
+      model kontrollerini geçti.
 - [ ] Tarayıcı arayüzü yalnızca `127.0.0.1` üzerinden açılıyor.
 - [ ] Gerçek veri kullanımı için kurum/bilgi güvenliği onayı var.
 - [ ] SQL hesabı gerekiyorsa gerçekten read-only.
@@ -564,6 +564,8 @@ Gerçek kullanıma geçmeden önce hepsinin doğru olduğundan emin olun:
 
 Bu liste geçildikten sonra fiziksel Windows kabul sonuçlarını release checklist'e kaydedin. Stable
 `v1.0.0`, installer kurulumu/upgrade/uninstall dahil bütün zorunlu kapılar geçmeden yayımlanmamalıdır.
+Acceptance komutu native Tauri penceresini veya installer davranışını sınamaz; bunlar ayrıca fiziksel
+olarak doğrulanmalıdır.
 
 ## Resmi kaynaklar
 

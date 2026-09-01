@@ -12,7 +12,8 @@
     "desktop:type-check": "pnpm --dir apps/desktop type-check",
     "desktop:lint": "pnpm --dir apps/desktop lint",
     "web:build": "pnpm --dir apps/desktop build",
-    "desktop:build": "pnpm --dir apps/desktop desktop:build"
+    "desktop:build": "pnpm --dir apps/desktop desktop:build",
+    "acceptance": "python -m lacopilot.release_acceptance --agent-mode auto"
   },
   "packageManager": "pnpm@10.18.1"
 }

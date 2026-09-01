@@ -201,6 +201,18 @@ pnpm desktop:test
 pnpm web:build
 ```
 
+Tek komutluk release-candidate veri kabulü, kontrollü sentetik CSV/XLSX üzerinde Quick/Analyst
+paritesini, model-yok fallback'ini ve aynı manifest SHA-256'ına bağlı Excel/HTML/PDF raporlarını
+çalıştırır:
+
+```powershell
+.\scripts\run_release_acceptance.ps1
+```
+
+Gerçek yerel Ollama planner/synthesis kabulünü zorunlu kılmak için hedef Windows makinede
+`.\scripts\run_release_acceptance.ps1 -LiveAgent` kullanılır. Bu komut native Tauri pencere ve
+installer etkileşimini doğrulamaz; fiziksel masaüstü kabulü ayrıca yapılır.
+
 GitHub Actions ayrıca Python 3.11/3.12, Windows Python smoke/privacy, desktop contract/build,
 Windows Tauri `cargo check --locked` ve paketlenmiş backend executable health smoke çalıştırır.
 
