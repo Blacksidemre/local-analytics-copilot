@@ -71,6 +71,7 @@ dev = [
 [project.scripts]
 lac = "lacopilot.cli:app"
 lac-desktop-backend = "lacopilot.desktop_entry:main"
+lac-acceptance = "lacopilot.release_acceptance:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

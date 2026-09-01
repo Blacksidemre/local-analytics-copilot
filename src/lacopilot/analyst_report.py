@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import math
 import re
@@ -28,6 +29,29 @@ _DIRECT_EVIDENCE_FORMULA = re.compile(r"^='Evidence'!\$([A-H])\$(\d+)$")
 _FORMULA_ERRORS = {"#REF!", "#VALUE!", "#DIV/0!", "#NAME?", "#N/A", "#NUM!", "#NULL!"}
 
 
+def analyst_manifest_sha256(payload: dict[str, Any]) -> str:
+    """Bind every Analyst report format to the same verified evidence manifest."""
+    manifest = {
+        "schema_version": payload["schema_version"],
+        "target_semantics": payload["target_semantics"],
+        "kpi_selection": payload["kpi_selection"],
+        "multiple_testing": payload["multiple_testing"],
+        "analyses": payload["analyses"],
+        "findings": payload["findings"],
+        "dashboard": payload["dashboard"],
+        "interpretation": payload["interpretation"],
+        "verification": payload["verification"],
+    }
+    encoded = json.dumps(
+        manifest,
+        ensure_ascii=False,
+        allow_nan=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
 def _finding_index(payload: dict[str, Any]) -> dict[str, dict[str, Any]]:
     return {
         finding["finding_id"]: finding
@@ -54,6 +78,14 @@ def _write_report_workbook(output: Path, payload: dict[str, Any]) -> None:
 
     with safe_excel_writer(output) as writer:
         workbook = writer.book
+        workbook.set_properties(
+            {
+                "keywords": (
+                    f"{REPORT_SCHEMA_VERSION};"
+                    f"lac-manifest-sha256={analyst_manifest_sha256(payload)}"
+                )
+            }
+        )
         title = workbook.add_format(
             {
                 "bold": True,
@@ -300,6 +332,7 @@ def _same_number(actual: Any, expected: Any) -> bool:
 
 
 def validate_analyst_excel_report(path: Path, payload: dict[str, Any]) -> dict[str, Any]:
+    manifest_sha256 = analyst_manifest_sha256(payload)
     errors: list[dict[str, str]] = []
     try:
         formula_book = load_workbook(path, data_only=False, keep_links=False)
@@ -315,6 +348,7 @@ def validate_analyst_excel_report(path: Path, payload: dict[str, Any]) -> dict[s
             "formula_count": 0,
             "error_cells": [],
             "external_links": [],
+            "manifest_sha256": manifest_sha256,
         }
 
     if formula_book.sheetnames != REPORT_SHEETS:
@@ -322,6 +356,14 @@ def validate_analyst_excel_report(path: Path, payload: dict[str, Any]) -> dict[s
             {
                 "code": "invalid_sheet_contract",
                 "message": f"Expected {REPORT_SHEETS}, found {formula_book.sheetnames}",
+            }
+        )
+    keywords = str(formula_book.properties.keywords or "")
+    if f"lac-manifest-sha256={manifest_sha256}" not in keywords:
+        errors.append(
+            {
+                "code": "manifest_digest_mismatch",
+                "message": "Workbook metadata is not bound to the verified Analyst manifest",
             }
         )
     finding_index = _finding_index(payload)
@@ -462,6 +504,7 @@ def validate_analyst_excel_report(path: Path, payload: dict[str, Any]) -> dict[s
         "formula_count": formula_count,
         "error_cells": error_cells,
         "external_links": external_links,
+        "manifest_sha256": manifest_sha256,
     }
 
 

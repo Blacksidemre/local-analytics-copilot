@@ -348,6 +348,9 @@ def test_analyst_excel_report_reopens_with_finding_bound_formulas(tmp_path, monk
     assert result["verification"]["status"] == "passed"
     assert result["verification"]["error_cells"] == []
     assert result["verification"]["external_links"] == []
+    assert f"lac-manifest-sha256={result['verification']['manifest_sha256']}" in str(
+        formula_book.properties.keywords
+    )
     assert formula_book.sheetnames == REPORT_SHEETS
     assert formula_book["Executive Dashboard"]["E8"].value == "='Evidence'!$D$2"
     effect_id = payload["analyses"][0]["finding_ids"]["effect"]
@@ -362,6 +365,14 @@ def test_analyst_excel_report_reopens_with_finding_bound_formulas(tmp_path, monk
     )
     assert "never-export" not in all_text
 
+    original_keywords = formula_book.properties.keywords
+    formula_book.properties.keywords = "lac-manifest-sha256=tampered"
+    formula_book.save(output)
+    tampered_manifest = validate_analyst_excel_report(output, payload)
+    assert tampered_manifest["status"] == "failed"
+    assert "manifest_digest_mismatch" in {error["code"] for error in tampered_manifest["errors"]}
+
+    formula_book.properties.keywords = original_keywords
     formula_book["Executive Dashboard"]["E8"] = "=1/0"
     formula_book.save(output)
     tampered = validate_analyst_excel_report(output, payload)
@@ -425,10 +436,7 @@ def test_analyst_html_and_pdf_reports_reopen_with_verified_evidence(tmp_path, mo
         result["verification"]["dashboard_card_count"] == len(payload["dashboard"]["cards"])
         for result in results
     )
-    assert (
-        html_result["verification"]["manifest_sha256"]
-        == pdf_result["verification"]["manifest_sha256"]
-    )
+    assert len({result["verification"]["manifest_sha256"] for result in results}) == 1
     assert pdf_result["verification"]["page_count"] >= 3
     assert "never-export" not in html_text
     assert "never-export" not in pdf_text

@@ -16,6 +16,7 @@ workspace/outputs/*
 workspace/archive/*
 workspace/logs/*
 workspace/knowledge/*
+workspace/acceptance-runs/*
 workspace/*.sqlite3
 workspace/*.sqlite3-*
 !workspace/**/.gitkeep

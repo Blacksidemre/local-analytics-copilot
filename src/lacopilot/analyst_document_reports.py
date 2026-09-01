@@ -6,7 +6,6 @@ payload. They never load source rows or calculate replacement metrics.
 
 from __future__ import annotations
 
-import hashlib
 import html
 import json
 import math
@@ -34,6 +33,7 @@ from reportlab.platypus import (
     TableStyle,
 )
 
+from lacopilot.analyst_report import analyst_manifest_sha256
 from lacopilot.audit import audit
 from lacopilot.config import get_settings
 from lacopilot.tools.common import safe_output_path
@@ -87,25 +87,7 @@ def _require_verified_payload(
 
 
 def _manifest_digest(payload: dict[str, Any]) -> str:
-    manifest = {
-        "schema_version": payload["schema_version"],
-        "target_semantics": payload["target_semantics"],
-        "kpi_selection": payload["kpi_selection"],
-        "multiple_testing": payload["multiple_testing"],
-        "analyses": payload["analyses"],
-        "findings": payload["findings"],
-        "dashboard": payload["dashboard"],
-        "interpretation": payload["interpretation"],
-        "verification": payload["verification"],
-    }
-    encoded = json.dumps(
-        manifest,
-        ensure_ascii=False,
-        allow_nan=False,
-        sort_keys=True,
-        separators=(",", ":"),
-    ).encode("utf-8")
-    return hashlib.sha256(encoded).hexdigest()
+    return analyst_manifest_sha256(payload)
 
 
 def _machine_number(value: Any) -> str:
