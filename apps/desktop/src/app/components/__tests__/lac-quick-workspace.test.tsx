@@ -9,6 +9,10 @@ const bridge = vi.hoisted(() => ({
   analyst: vi.fn(),
   agent: vi.fn(),
   agentReport: vi.fn(),
+  analysisHistory: vi.fn(),
+  analysisHistoryRun: vi.fn(),
+  compareAnalysisHistory: vi.fn(),
+  deleteAnalysisHistoryRun: vi.fn(),
   analystReport: vi.fn(),
   analystHtmlReport: vi.fn(),
   analystPdfReport: vi.fn(),
@@ -222,6 +226,37 @@ const agentResult = {
   },
 };
 
+const historyRuns = [
+  {
+    run_id: "c".repeat(32),
+    dataset_id: "d".repeat(64),
+    dataset_ref: "incoming/data.csv",
+    source_name: "data.csv",
+    sheet_name: "0",
+    mode: "agent",
+    question: "Yeni dönemi özetle.",
+    run_status: "completed",
+    verifier_status: "passed",
+    finding_count: 1,
+    tools: ["profile_dataset"],
+    created_at: "2026-09-01T09:00:00+00:00",
+  },
+  {
+    run_id: "b".repeat(32),
+    dataset_id: "e".repeat(64),
+    dataset_ref: "incoming/data.csv",
+    source_name: "data.csv",
+    sheet_name: "0",
+    mode: "agent",
+    question: "Önceki dönemi özetle.",
+    run_status: "completed",
+    verifier_status: "passed",
+    finding_count: 1,
+    tools: ["profile_dataset"],
+    created_at: "2026-08-01T09:00:00+00:00",
+  },
+];
+
 beforeEach(() => {
   bridge.health.mockReset().mockResolvedValue({
     status: "ready",
@@ -237,6 +272,13 @@ beforeEach(() => {
   bridge.analyst.mockReset();
   bridge.agent.mockReset();
   bridge.agentReport.mockReset();
+  bridge.analysisHistory.mockReset().mockResolvedValue({
+    schema_version: "analysis-history-list.v1",
+    runs: [],
+  });
+  bridge.analysisHistoryRun.mockReset();
+  bridge.compareAnalysisHistory.mockReset();
+  bridge.deleteAnalysisHistoryRun.mockReset();
   bridge.analystReport.mockReset();
   bridge.analystHtmlReport.mockReset();
   bridge.analystPdfReport.mockReset();
@@ -542,6 +584,96 @@ describe("LacQuickWorkspace", () => {
       target: { value: "continuous" },
     });
     expect(runButton).toBeEnabled();
+  });
+
+  it("lists, opens, compares and explicitly deletes verified local history", async () => {
+    bridge.upload.mockResolvedValue({ ...analysis, status: "profiled", manifest: {} });
+    bridge.analysisHistory.mockResolvedValue({
+      schema_version: "analysis-history-list.v1",
+      runs: historyRuns,
+    });
+    bridge.analysisHistoryRun.mockResolvedValue({
+      ...historyRuns[0],
+      findings: [
+        {
+          finding_id: "profile.shape.rows",
+          kind: "metric",
+          label: "Satır sayısı",
+          value: 1600,
+          unit: "rows",
+          source: "deterministic_dataframe_shape",
+        },
+      ],
+    });
+    bridge.compareAnalysisHistory.mockResolvedValue({
+      schema_version: "analysis-history-comparison.v1",
+      status: "completed",
+      baseline: historyRuns[1],
+      current: historyRuns[0],
+      dataset_relation: "same_source_new_version",
+      period_semantics: "not_inferred",
+      summary: {
+        total: 1,
+        changed: 1,
+        unchanged: 0,
+        added: 0,
+        removed: 0,
+        incompatible: 0,
+      },
+      changes: [
+        {
+          finding_id: "profile.shape.rows",
+          status: "changed",
+          label: "Satır sayısı",
+          baseline_value: 1508,
+          current_value: 1600,
+          absolute_delta: 92,
+          relative_change_pct: 6.100796,
+          unit: "rows",
+          source: "deterministic_dataframe_shape",
+          dimension: null,
+        },
+      ],
+      manifest_sha256: "f".repeat(64),
+      verification: {
+        status: "passed",
+        scope: "archived_verified_finding_manifests",
+        evidence_only: true,
+        errors: [],
+      },
+    });
+    bridge.deleteAnalysisHistoryRun.mockResolvedValue(undefined);
+    const { container } = render(<LacQuickWorkspace />);
+    const input = container.querySelector('input[type="file"]') as HTMLInputElement;
+    fireEvent.change(input, { target: { files: [new File(["a,b\n1,2"], "data.csv")] } });
+    await screen.findByText("Deterministik Quick Dashboard");
+
+    fireEvent.click(screen.getByRole("button", { name: "Geçmişi yenile" }));
+    expect(await screen.findByText("2 doğrulanmış analiz bulundu.")).toBeInTheDocument();
+    fireEvent.click(screen.getAllByRole("button", { name: "Aç" })[0]);
+    expect(await screen.findByText("Verifier passed · 1 kanıt")).toBeInTheDocument();
+
+    fireEvent.change(screen.getByLabelText("Karşılaştırma başlangıç analizi"), {
+      target: { value: historyRuns[1].run_id },
+    });
+    fireEvent.change(screen.getByLabelText("Karşılaştırma güncel analizi"), {
+      target: { value: historyRuns[0].run_id },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Karşılaştır" }));
+    expect(await screen.findByText("Deterministik karşılaştırma")).toBeInTheDocument();
+    expect(screen.getByText(/1508 → 1600/)).toBeInTheDocument();
+
+    const firstDelete = screen.getAllByRole("button", { name: "Sil" })[0];
+    fireEvent.click(firstDelete);
+    const confirmation = screen.getByRole("button", { name: "Silmeyi onayla" });
+    expect(bridge.deleteAnalysisHistoryRun).not.toHaveBeenCalled();
+    fireEvent.click(confirmation);
+    await waitFor(() =>
+      expect(bridge.deleteAnalysisHistoryRun).toHaveBeenCalledWith(
+        historyRuns[0].run_id,
+        expect.any(AbortSignal)
+      )
+    );
   });
 
   it("does not render rejected Analyst prose", async () => {

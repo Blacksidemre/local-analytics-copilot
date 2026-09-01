@@ -6,6 +6,7 @@ from types import SimpleNamespace
 
 from fastapi.testclient import TestClient
 
+from lacopilot.analysis_history import AnalysisHistoryStore
 from lacopilot.app import app
 from lacopilot.config import get_settings
 from lacopilot.regression_fixture import write_credit_risk_regression_fixture
@@ -111,6 +112,31 @@ def test_agent_api_runs_local_planner_and_returns_verified_fallback(tmp_path, mo
     archived = TestClient(app).get(f"/api/v1/analysis/history/{run_id}").json()
     assert archived["run"]["verifier_status"] == "passed"
     assert archived["run"]["findings"]
+
+    second_run_id = AnalysisHistoryStore(settings.analysis_history_db).record_verified_agent_run(
+        dataset_ref=dataset_ref,
+        source_path=dataset,
+        sheet_name="0",
+        question="Aynı doğrulanmış manifesti tekrar karşılaştır.",
+        agent=payload["agent"],
+    )
+    assert second_run_id is not None
+    comparison = TestClient(app).post(
+        "/api/v1/analysis/history/compare",
+        json={"baseline_run_id": run_id, "current_run_id": second_run_id},
+    )
+    assert comparison.status_code == 200
+    comparison_payload = comparison.json()
+    assert comparison_payload["verification"]["status"] == "passed"
+    assert comparison_payload["dataset_relation"] == "same_dataset_version"
+    assert comparison_payload["summary"]["changed"] == 0
+    assert comparison_payload["summary"]["unchanged"] == len(archived["run"]["findings"])
+    rejected = TestClient(app).post(
+        "/api/v1/analysis/history/compare",
+        json={"baseline_run_id": run_id, "current_run_id": run_id},
+    )
+    assert rejected.status_code == 422
+    assert rejected.json()["detail"]["code"] == "invalid_history_comparison"
 
     report_contracts = {
         "xlsx": ("agent-report.v1", b"PK\x03\x04"),

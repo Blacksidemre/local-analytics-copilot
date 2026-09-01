@@ -1,6 +1,20 @@
 # Changelog
 
-## Unreleased — Hermetic Hybrid Milestone 1
+## Unreleased — Canonical pre-release
+
+- Promoted the consolidated single-repository product to protected `main`
+- Added Hermetic-derived Next/Tauri UI under `apps/desktop` with licenses/notices preserved
+- Added one root launcher for the deterministic backend and unified UI
+- Added bounded local Ollama Agent planning with typed allowlisted tools and independent verifier
+- Added adversarial fail-closed coverage for prompt injection, tool abuse and unsupported claims
+- Added local verifier-passed Agent history without raw-row/prompt/secret retention
+- Added fail-closed history list/open/delete UI and deterministic two-manifest comparison
+- Added verified Agent Excel/HTML/PDF reports sharing one evidence manifest and SHA-256 binding
+- Added Windows Tauri Rust compile and packaged backend executable health smoke in CI
+- Kept stable `v1.0.0` blocked pending physical Windows and live local-Ollama acceptance
+
+### Milestone 1 foundation
+
 - Frozen the Hermetic UI/Tauri ↔ LAC deterministic API integration boundary
 - Added robust CSV encoding, delimiter, quote, decimal and thousands-separator detection
 - Added XLSX/XLSM workbook sheet discovery, deterministic header-row detection and archive guards
@@ -14,6 +28,7 @@
 - Expanded automated suite to 49 tests and 66.29% coverage
 
 ## 1.0.0rc1
+
 - Ollama local agent with Fast/Main/Deep model modes
 - Persistent local conversations
 - Editable personalities and mentor learning profile

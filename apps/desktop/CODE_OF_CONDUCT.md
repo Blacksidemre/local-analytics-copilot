@@ -33,7 +33,7 @@ Examples of unacceptable behavior:
 Instances of abusive, harassing, or otherwise unacceptable behavior may be
 reported to the project maintainers by opening a confidential report via GitHub
 private vulnerability reporting
-(https://github.com/achalp/hermetic/security/advisories/new) or, for
+(https://github.com/Blacksidemre/local-analytics-copilot/security/advisories/new) or, for
 non-sensitive matters, a GitHub issue. All complaints will be reviewed and
 investigated and will result in a response that is deemed necessary and
 appropriate to the circumstances.

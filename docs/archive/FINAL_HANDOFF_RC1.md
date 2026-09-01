@@ -1,4 +1,6 @@
-# RC Handoff — Local Analytics Copilot 1.0 RC1
+# Historical RC Handoff — Local Analytics Copilot 1.0 RC1
+
+> **Archived/deprecated.** Current state is recorded in [`WORK_HANDOFF.md`](../../WORK_HANDOFF.md).
 
 Bu belge final/stabil ilanı değildir. Kod ve deterministik test kapısı geçmiştir; Windows, GPU,
 Ollama, Excel COM, OpenClaw ve canlı bağlantı doğrulamaları hedef bilgisayarda beklemektedir.

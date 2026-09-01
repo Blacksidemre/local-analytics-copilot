@@ -6,6 +6,9 @@ import { Card } from "@/components/ui/card";
 import {
   LacBridgeClient,
   LacBridgeError,
+  type AnalysisHistoryComparison,
+  type AnalysisHistoryRun,
+  type AnalysisHistoryRunSummary,
   type AgentResult,
   type AnalystReportFormat,
   type AnalystResult,
@@ -38,7 +41,11 @@ type ActiveOperation =
   | "report-pdf"
   | "agent-report-xlsx"
   | "agent-report-html"
-  | "agent-report-pdf";
+  | "agent-report-pdf"
+  | "history-load"
+  | "history-open"
+  | "history-compare"
+  | "history-delete";
 
 const DEFAULT_QUESTION = "Bu veri setinin hızlı profilini Türkçe ve kanıta bağlı biçimde yorumla.";
 const REPORT_LABELS: Record<AnalystReportFormat, string> = {
@@ -58,6 +65,10 @@ const OPERATION_LABELS: Record<ActiveOperation, string> = {
   "agent-report-xlsx": "Agent kanıtlarından Excel raporu hazırlanıyor...",
   "agent-report-html": "Agent kanıtlarından HTML raporu hazırlanıyor...",
   "agent-report-pdf": "Agent kanıtlarından PDF raporu hazırlanıyor...",
+  "history-load": "Doğrulanmış yerel analiz geçmişi yükleniyor...",
+  "history-open": "Doğrulanmış finding manifesti açılıyor...",
+  "history-compare": "İki doğrulanmış finding manifesti karşılaştırılıyor...",
+  "history-delete": "Yerel analiz kaydı siliniyor...",
 };
 
 function fallbackError(error: unknown): BridgeErrorDetail {
@@ -103,6 +114,23 @@ function agentToolLabel(tool: string): string {
   );
 }
 
+function historyDate(value: string): string {
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? value : date.toLocaleString("tr-TR");
+}
+
+function comparisonStatusLabel(status: string): string {
+  return (
+    {
+      changed: "Değişti",
+      unchanged: "Aynı",
+      added: "Yeni",
+      removed: "Kaldırıldı",
+      incompatible: "Karşılaştırılamaz",
+    }[status] ?? status
+  );
+}
+
 export function LacQuickWorkspace() {
   const client = useMemo(() => new LacBridgeClient(), []);
   const inputRef = useRef<HTMLInputElement>(null);
@@ -125,6 +153,15 @@ export function LacQuickWorkspace() {
   const [agentReportStatus, setAgentReportStatus] = useState("");
   const [targetColumn, setTargetColumn] = useState("");
   const [targetKind, setTargetKind] = useState<"" | AnalystTargetKind>("");
+  const [historyRuns, setHistoryRuns] = useState<AnalysisHistoryRunSummary[]>([]);
+  const [selectedHistory, setSelectedHistory] = useState<AnalysisHistoryRun | null>(null);
+  const [historyComparison, setHistoryComparison] = useState<AnalysisHistoryComparison | null>(
+    null
+  );
+  const [baselineRunId, setBaselineRunId] = useState("");
+  const [currentRunId, setCurrentRunId] = useState("");
+  const [pendingDeleteRunId, setPendingDeleteRunId] = useState("");
+  const [historyStatus, setHistoryStatus] = useState("");
 
   const busy = activeOperation !== null;
   const selectedTarget = ready?.profile.schema.find((column) => column.name === targetColumn);
@@ -318,6 +355,13 @@ export function LacQuickWorkspace() {
         signal: controller.signal,
       });
       setAgent(result);
+      if (result.history?.status === "saved") {
+        const history = await client.analysisHistory({ limit: 50, signal: controller.signal });
+        setHistoryRuns(history.runs);
+        setBaselineRunId((current) => current || history.runs[1]?.run_id || "");
+        setCurrentRunId(result.history.run_id);
+        setHistoryStatus("Doğrulanmış Agent analizi yerel geçmişe kaydedildi.");
+      }
     } catch (caught) {
       if (!controller.signal.aborted) setError(fallbackError(caught));
     } finally {
@@ -386,6 +430,79 @@ export function LacQuickWorkspace() {
         URL.revokeObjectURL(objectUrl);
       }
       setReportStatus(`Doğrulanmış ${REPORT_LABELS[format]} raporu indirildi: ${result.filename}`);
+    } catch (caught) {
+      if (!controller.signal.aborted) setError(fallbackError(caught));
+    } finally {
+      finishRequest(controller);
+    }
+  };
+
+  const loadHistory = async () => {
+    const controller = startRequest("history-load");
+    setHistoryStatus("");
+    try {
+      const history = await client.analysisHistory({ limit: 50, signal: controller.signal });
+      setHistoryRuns(history.runs);
+      setBaselineRunId((current) => current || history.runs[1]?.run_id || "");
+      setCurrentRunId((current) => current || history.runs[0]?.run_id || "");
+      setHistoryStatus(
+        history.runs.length > 0
+          ? `${history.runs.length.toLocaleString("tr-TR")} doğrulanmış analiz bulundu.`
+          : "Henüz doğrulanmış Agent analizi kaydedilmedi."
+      );
+    } catch (caught) {
+      if (!controller.signal.aborted) setError(fallbackError(caught));
+    } finally {
+      finishRequest(controller);
+    }
+  };
+
+  const openHistoryRun = async (runId: string) => {
+    const controller = startRequest("history-open");
+    try {
+      const run = await client.analysisHistoryRun(runId, controller.signal);
+      setSelectedHistory(run);
+      setPendingDeleteRunId("");
+    } catch (caught) {
+      if (!controller.signal.aborted) setError(fallbackError(caught));
+    } finally {
+      finishRequest(controller);
+    }
+  };
+
+  const compareHistory = async () => {
+    if (!baselineRunId || !currentRunId || baselineRunId === currentRunId) return;
+    const controller = startRequest("history-compare");
+    setHistoryComparison(null);
+    try {
+      const comparison = await client.compareAnalysisHistory(
+        baselineRunId,
+        currentRunId,
+        controller.signal
+      );
+      setHistoryComparison(comparison);
+    } catch (caught) {
+      if (!controller.signal.aborted) setError(fallbackError(caught));
+    } finally {
+      finishRequest(controller);
+    }
+  };
+
+  const deleteHistoryRun = async (runId: string) => {
+    if (pendingDeleteRunId !== runId) {
+      setPendingDeleteRunId(runId);
+      return;
+    }
+    const controller = startRequest("history-delete");
+    try {
+      await client.deleteAnalysisHistoryRun(runId, controller.signal);
+      setHistoryRuns((runs) => runs.filter((run) => run.run_id !== runId));
+      if (selectedHistory?.run_id === runId) setSelectedHistory(null);
+      if (baselineRunId === runId) setBaselineRunId("");
+      if (currentRunId === runId) setCurrentRunId("");
+      setHistoryComparison(null);
+      setPendingDeleteRunId("");
+      setHistoryStatus("Yerel analiz kaydı silindi.");
     } catch (caught) {
       if (!controller.signal.aborted) setError(fallbackError(caught));
     } finally {
@@ -908,6 +1025,209 @@ export function LacQuickWorkspace() {
                   {agent.agent.synthesis && agent.agent.synthesis.status !== "completed" && (
                     <div className="border border-warning-border bg-warning-bg px-4 py-3 text-sm text-warning-text">
                       {agent.agent.synthesis.message}
+                    </div>
+                  )}
+                </div>
+              )}
+            </Card>
+
+            <Card>
+              <div className="flex flex-wrap items-start justify-between gap-3">
+                <div>
+                  <p className="text-xs font-medium uppercase tracking-[0.14em] text-accent">
+                    Yerel analiz geçmişi
+                  </p>
+                  <h2 className="mt-1 text-base font-semibold">
+                    Doğrulanmış çalışmaları karşılaştır
+                  </h2>
+                  <p className="mt-1 max-w-[780px] text-xs leading-5 text-t-tertiary">
+                    Yalnız verifier-passed finding manifestleri saklanır. Ham satırlar ve model
+                    promptları tutulmaz; eski bulgu yeni analiz için otomatik gerçek sayılmaz.
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  disabled={busy}
+                  onClick={() => void loadHistory()}
+                  className="border border-accent px-3 py-2 text-xs font-medium text-accent hover:bg-accent-subtle disabled:opacity-50"
+                  style={{ borderRadius: "var(--radius-button)" }}
+                >
+                  {activeOperation === "history-load" ? "Yükleniyor..." : "Geçmişi yenile"}
+                </button>
+              </div>
+
+              {historyStatus && <p className="mt-4 text-xs text-t-secondary">{historyStatus}</p>}
+
+              {historyRuns.length > 0 && (
+                <div className="mt-5 space-y-5 border-t border-border-default pt-5">
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-left text-sm">
+                      <thead className="text-xs text-t-tertiary">
+                        <tr>
+                          <th className="pb-2 font-medium">Dosya</th>
+                          <th className="pb-2 font-medium">Soru</th>
+                          <th className="pb-2 font-medium">Tarih</th>
+                          <th className="pb-2 text-right font-medium">Kanıt</th>
+                          <th className="pb-2 text-right font-medium">İşlem</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-border-default">
+                        {historyRuns.map((run) => (
+                          <tr key={run.run_id}>
+                            <td className="py-2.5 font-mono text-xs">{run.source_name}</td>
+                            <td className="max-w-[360px] truncate py-2.5" title={run.question}>
+                              {run.question}
+                            </td>
+                            <td className="whitespace-nowrap py-2.5 text-xs">
+                              {historyDate(run.created_at)}
+                            </td>
+                            <td className="py-2.5 text-right tabular-nums">{run.finding_count}</td>
+                            <td className="whitespace-nowrap py-2.5 text-right">
+                              <button
+                                type="button"
+                                disabled={busy}
+                                onClick={() => void openHistoryRun(run.run_id)}
+                                className="text-xs font-medium text-accent hover:underline disabled:opacity-50"
+                              >
+                                Aç
+                              </button>
+                              <button
+                                type="button"
+                                disabled={busy}
+                                onClick={() => void deleteHistoryRun(run.run_id)}
+                                className="ml-3 text-xs font-medium text-warning-text hover:underline disabled:opacity-50"
+                              >
+                                {pendingDeleteRunId === run.run_id ? "Silmeyi onayla" : "Sil"}
+                              </button>
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+
+                  {selectedHistory && (
+                    <div className="border border-border-default bg-surface-0 px-4 py-4">
+                      <div className="flex flex-wrap items-center justify-between gap-2">
+                        <p className="text-sm font-semibold">{selectedHistory.source_name}</p>
+                        <span className="text-[11px] font-medium text-success-text">
+                          Verifier passed · {selectedHistory.finding_count} kanıt
+                        </span>
+                      </div>
+                      <p className="mt-1 text-xs text-t-tertiary">{selectedHistory.question}</p>
+                      <div className="mt-3 grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
+                        {selectedHistory.findings.slice(0, 8).map((finding) => (
+                          <div
+                            key={finding.finding_id}
+                            className="border border-border-default p-3"
+                          >
+                            <p className="truncate text-xs text-t-secondary">
+                              {finding.label ?? finding.finding_id}
+                            </p>
+                            <p className="mt-1 font-semibold tabular-nums">
+                              {formatValue(finding.value, finding.unit ?? "")}
+                            </p>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  <div>
+                    <div className="grid gap-3 md:grid-cols-[1fr_1fr_auto]">
+                      <select
+                        aria-label="Karşılaştırma başlangıç analizi"
+                        value={baselineRunId}
+                        onChange={(event) => {
+                          setBaselineRunId(event.target.value);
+                          setHistoryComparison(null);
+                        }}
+                        className="border border-border-default bg-surface-0 px-3 py-2 text-sm"
+                      >
+                        <option value="">Önceki analizi seçin</option>
+                        {historyRuns.map((run) => (
+                          <option key={run.run_id} value={run.run_id}>
+                            {run.source_name} · {historyDate(run.created_at)}
+                          </option>
+                        ))}
+                      </select>
+                      <select
+                        aria-label="Karşılaştırma güncel analizi"
+                        value={currentRunId}
+                        onChange={(event) => {
+                          setCurrentRunId(event.target.value);
+                          setHistoryComparison(null);
+                        }}
+                        className="border border-border-default bg-surface-0 px-3 py-2 text-sm"
+                      >
+                        <option value="">Yeni analizi seçin</option>
+                        {historyRuns.map((run) => (
+                          <option key={run.run_id} value={run.run_id}>
+                            {run.source_name} · {historyDate(run.created_at)}
+                          </option>
+                        ))}
+                      </select>
+                      <button
+                        type="button"
+                        disabled={
+                          busy || !baselineRunId || !currentRunId || baselineRunId === currentRunId
+                        }
+                        onClick={() => void compareHistory()}
+                        className="bg-accent px-4 py-2 text-sm font-medium text-white disabled:opacity-50"
+                        style={{ borderRadius: "var(--radius-button)" }}
+                      >
+                        {activeOperation === "history-compare"
+                          ? "Karşılaştırılıyor..."
+                          : "Karşılaştır"}
+                      </button>
+                    </div>
+                    <p className="mt-2 text-xs text-t-tertiary">
+                      Dönem anlamı sütun adı veya tarihten tahmin edilmez; seçim sırasını siz
+                      belirlersiniz. Yalnız uyumlu finding_id, unit, source ve dimension değerleri
+                      için fark hesaplanır.
+                    </p>
+                  </div>
+
+                  {historyComparison && (
+                    <div className="border border-success-border bg-success-subtle px-4 py-4">
+                      <div className="flex flex-wrap items-center justify-between gap-3">
+                        <h3 className="text-sm font-semibold">Deterministik karşılaştırma</h3>
+                        <span className="text-[11px] font-medium text-success-text">
+                          Evidence-only · verifier passed
+                        </span>
+                      </div>
+                      <div className="mt-3 grid grid-cols-2 gap-2 text-xs sm:grid-cols-5">
+                        {(
+                          ["changed", "added", "removed", "incompatible", "unchanged"] as const
+                        ).map((status) => (
+                          <div key={status} className="bg-surface-0 px-3 py-2">
+                            <p className="text-t-tertiary">{comparisonStatusLabel(status)}</p>
+                            <p className="mt-1 font-semibold tabular-nums">
+                              {historyComparison.summary[status]}
+                            </p>
+                          </div>
+                        ))}
+                      </div>
+                      <div className="mt-4 space-y-2">
+                        {historyComparison.changes
+                          .filter((change) => change.status !== "unchanged")
+                          .slice(0, 12)
+                          .map((change) => (
+                            <div
+                              key={change.finding_id}
+                              className="flex flex-wrap items-center justify-between gap-2 border-t border-success-border pt-2 text-xs"
+                            >
+                              <span className="font-mono">{change.finding_id}</span>
+                              <span>
+                                {comparisonStatusLabel(change.status)} ·{" "}
+                                {change.baseline_value ?? "—"} → {change.current_value ?? "—"}
+                                {change.absolute_delta !== null
+                                  ? ` · Δ ${change.absolute_delta}`
+                                  : ""}
+                              </span>
+                            </div>
+                          ))}
+                      </div>
                     </div>
                   )}
                 </div>

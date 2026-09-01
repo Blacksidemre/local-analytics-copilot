@@ -214,6 +214,21 @@ const agentResult: AgentResult = {
   },
 };
 
+const historySummary = {
+  run_id: "a".repeat(32),
+  dataset_id: "b".repeat(64),
+  dataset_ref: "incoming/data.csv",
+  source_name: "data.csv",
+  sheet_name: "0",
+  mode: "agent" as const,
+  question: "Veriyi özetle.",
+  run_status: "completed",
+  verifier_status: "passed" as const,
+  finding_count: 1,
+  tools: ["profile_dataset" as const],
+  created_at: "2026-09-01T08:00:00+00:00",
+};
+
 const mockFetch = vi.fn<typeof fetch>();
 
 beforeEach(() => {
@@ -674,6 +689,127 @@ describe("LacBridgeClient", () => {
         details: { row: 9 },
       },
     } satisfies Partial<LacBridgeError>);
+  });
+
+  it("lists, opens and deletes only verifier-passed local Agent history", async () => {
+    mockFetch
+      .mockResolvedValueOnce(
+        Response.json({ schema_version: "analysis-history-list.v1", runs: [historySummary] })
+      )
+      .mockResolvedValueOnce(
+        Response.json({
+          schema_version: "analysis-history.v1",
+          run: {
+            ...historySummary,
+            findings: [
+              {
+                finding_id: "profile.shape.rows",
+                kind: "metric",
+                label: "Satır sayısı",
+                value: 1508,
+                unit: "rows",
+                source: "deterministic_dataframe_shape",
+              },
+            ],
+          },
+        })
+      )
+      .mockResolvedValueOnce(Response.json({ status: "deleted", run_id: historySummary.run_id }));
+    const client = new LacBridgeClient();
+
+    const listed = await client.analysisHistory({ limit: 20 });
+    const opened = await client.analysisHistoryRun(historySummary.run_id);
+    await client.deleteAnalysisHistoryRun(historySummary.run_id);
+
+    expect(listed.runs).toHaveLength(1);
+    expect(opened.findings[0].finding_id).toBe("profile.shape.rows");
+    expect(mockFetch.mock.calls.map(([url]) => url)).toEqual([
+      "/api/lac/api/v1/analysis/history?limit=20",
+      `/api/lac/api/v1/analysis/history/${historySummary.run_id}`,
+      `/api/lac/api/v1/analysis/history/${historySummary.run_id}`,
+    ]);
+    expect(mockFetch.mock.calls[2][1]?.method).toBe("DELETE");
+  });
+
+  it("accepts only evidence-only verifier-passed history comparisons", async () => {
+    const current = { ...historySummary, run_id: "c".repeat(32) };
+    mockFetch.mockResolvedValue(
+      Response.json({
+        schema_version: "analysis-history-comparison.v1",
+        status: "completed",
+        baseline: historySummary,
+        current,
+        dataset_relation: "same_dataset_version",
+        period_semantics: "not_inferred",
+        summary: {
+          total: 1,
+          changed: 1,
+          unchanged: 0,
+          added: 0,
+          removed: 0,
+          incompatible: 0,
+        },
+        changes: [
+          {
+            finding_id: "profile.shape.rows",
+            status: "changed",
+            label: "Satır sayısı",
+            baseline_value: 1508,
+            current_value: 1600,
+            absolute_delta: 92,
+            relative_change_pct: 6.100796,
+            unit: "rows",
+            source: "deterministic_dataframe_shape",
+            dimension: null,
+          },
+        ],
+        manifest_sha256: "d".repeat(64),
+        verification: {
+          status: "passed",
+          scope: "archived_verified_finding_manifests",
+          evidence_only: true,
+          errors: [],
+        },
+      })
+    );
+
+    const result = await new LacBridgeClient().compareAnalysisHistory(
+      historySummary.run_id,
+      current.run_id
+    );
+
+    expect(result.summary.changed).toBe(1);
+    expect(result.period_semantics).toBe("not_inferred");
+    expect(JSON.parse(String(mockFetch.mock.calls[0][1]?.body))).toEqual({
+      baseline_run_id: historySummary.run_id,
+      current_run_id: current.run_id,
+    });
+  });
+
+  it("fails closed for an unverified or forged history contract", async () => {
+    mockFetch.mockResolvedValueOnce(
+      Response.json({
+        schema_version: "analysis-history-list.v1",
+        runs: [{ ...historySummary, verifier_status: "failed" }],
+      })
+    );
+    await expect(new LacBridgeClient().analysisHistory()).rejects.toMatchObject({
+      status: 502,
+      detail: { code: "invalid_analysis_history_contract" },
+    });
+
+    mockFetch.mockResolvedValueOnce(
+      Response.json({
+        schema_version: "analysis-history-comparison.v1",
+        verification: { status: "failed", evidence_only: false, errors: ["forged"] },
+      })
+    );
+    await expect(
+      new LacBridgeClient().compareAnalysisHistory("a".repeat(32), "c".repeat(32))
+    ).rejects.toMatchObject({
+      status: 502,
+      detail: { code: "invalid_analysis_history_contract" },
+    });
   });
 
   it("rejects missing or duplicate required finding IDs", async () => {
