@@ -292,10 +292,12 @@ pub fn run() {
             // Kill the sidecar when the app exits so no orphan node lingers.
             if let RunEvent::Exit = event {
                 let children = app.state::<ManagedChildren>();
-                if let Some(mut child) = children.ui.lock().unwrap().take() {
+                let ui_child = children.ui.lock().unwrap().take();
+                if let Some(mut child) = ui_child {
                     let _ = child.kill();
                 }
-                if let Some(mut child) = children.backend.lock().unwrap().take() {
+                let backend_child = children.backend.lock().unwrap().take();
+                if let Some(mut child) = backend_child {
                     let _ = child.kill();
                 }
             }
