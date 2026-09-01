@@ -13,10 +13,10 @@ Release status: **pre-release — physical Windows acceptance pending**
 - The canonical product and the verified history/comparison follow-up were merged through protected
   branch pull requests; no direct protected-branch write was used.
 - Promotion method: normal merge commit; no force push, history rewrite or direct ruleset bypass.
-- Current promoted `main` checkpoint: `e51b9f87402ceeb18bab511d7ed421ff582f7fb0`.
-- Main GitHub Actions Run 34 passed all five required jobs.
-- The next integration candidate adds a one-command release acceptance gate and must pass its own
-  GitHub Actions run before another protected `main` promotion.
+- Release acceptance was promoted through protected-branch PR #8 using a normal merge commit.
+- Current promoted `main` checkpoint: `b392134964147e8f074ca38cdbc6b3a8232bf00e`.
+- PR GitHub Actions Run 40 and main GitHub Actions Run 41 each passed all five required jobs.
+- Release-acceptance integration checkpoint: `e7e39003b7fd45b3e755f279eeef3108ede729f7`.
 - The old `Blacksidemre/hermetic` repository is historical/reference only. It is not a runtime,
   build or package dependency and receives no new product work.
 - `achalp/hermetic` remains read-only; no PR, issue or write was sent upstream.
@@ -121,12 +121,10 @@ checks do not prove a physically installed desktop application.
 
 ## Remaining release blockers
 
-1. The release-acceptance integration candidate and any follow-up protected `main` PR CI must be
-   green.
-2. Run controlled CSV and XLSX Agent requests with the configured real local Ollama model.
-3. Install Visual Studio Build Tools (`Desktop development with C++`), MSVC and Windows SDK.
-4. Run physical Tauri startup, upload, Agent, verifier, report and shutdown acceptance.
-5. Build the Windows installer and pass clean install, shortcut launch, upgrade and uninstall.
+1. Run controlled CSV and XLSX Agent requests with the configured real local Ollama model.
+2. Install Visual Studio Build Tools (`Desktop development with C++`), MSVC and Windows SDK.
+3. Run physical Tauri startup, upload, Agent, verifier, report and shutdown acceptance.
+4. Build the Windows installer and pass clean install, shortcut launch, upgrade and uninstall.
 
 ## Minimum later Windows acceptance
 
