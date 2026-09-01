@@ -1,0 +1,160 @@
+/**
+ * Output style definitions and LLM prompt blocks.
+ *
+ * A style governs the *form* of the answer — its reading mode / container,
+ * narrative density, framing, tone, and depth of exploration — NOT its
+ * content. How many visuals, which types, and how much to show remain the
+ * model's call, driven by the question and the shape of the answer. Each
+ * prompt below shapes the frame and explicitly leaves the count/type to the
+ * model.
+ *
+ * Tightened taxonomy (4 consumption contexts):
+ *   dashboard  — scan frame (grid of metrics + charts)
+ *   brief      — one-screen bottom-line-up-front
+ *   report     — formal sectioned document
+ *   deep-dive  — exhaustive multi-angle exploration
+ *
+ * "Slides" is no longer a compose style — it's an export format (PPTX / a
+ * Reveal.js deck). "Narrative" and "Infographic" folded into report and
+ * dashboard respectively. Legacy ids still resolve via LEGACY_ALIASES so
+ * saved defaults / vizs don't break.
+ */
+
+export interface PurposeMode {
+  id: string;
+  label: string;
+  /** One-line description, shown on hover in the style selector. */
+  description: string;
+  /** Prompt block injected into the composer system prompt to shape the frame. */
+  prompt: string;
+  /**
+   * Prompt block injected into the CODE-GEN system prompt so each analysis step
+   * produces output matching the mode — rather than always generating an
+   * exhaustive battery the composer then discards. Scales compute to intent.
+   */
+  codegenScope: string;
+  /**
+   * Hard cap on TOTAL sub-questions (initial plan + re-planner + composer
+   * gap-check) for this mode. Each sub-question is ~one SQL-gen + one code-gen,
+   * so this is the dominant cost lever — it scales investigation breadth (and
+   * spend) to intent. The planner is also told to target this count.
+   */
+  maxSubQuestions: number;
+  /**
+   * Prompt block injected into the PLANNER user prompt: how many sub-questions
+   * to target and how sharp they should be. Pairs with maxSubQuestions (which
+   * also caps the parser + the orchestrator's re-plan growth).
+   */
+  planScope: string;
+}
+
+export const PURPOSE_MODES: Record<string, PurposeMode> = {
+  dashboard: {
+    id: "dashboard",
+    label: "Dashboard",
+    description: "At-a-glance grid of metrics and charts — for scanning.",
+    prompt:
+      "Compose for at-a-glance scanning, like a monitoring dashboard. Use a GRID-ORIENTED layout: lead with a LayoutGrid of the headline metrics as StatCards, then arrange visualizations in a LayoutGrid / LayoutRow so several read side by side rather than stacked in one tall column. Keep text minimal — short labels and at most one-line annotations, no paragraphs. The reader scans many things quickly, so prioritize visual density and parallel layout over narration. Let the question and the data decide WHICH metrics and charts appear and HOW MANY — never pad to fill the grid or force a fixed count.",
+    codegenScope:
+      "Output scope: compute the metrics (results) and chart_data that best answer THIS question — what the question warrants, not an exhaustive battery of breakdowns for their own sake; HOW MANY are shown is decided later at compose. FOCUSED refers to BREADTH (few angles), NOT shallow analysis: still compute the Computed Findings battery (trend direction/slope/p-value, step-change scan, base-effect flag) — those are a few pandas lines and they are what the narrative is allowed to claim.",
+    maxSubQuestions: 3,
+    planScope:
+      "Generate the FEWEST, most penetrating sub-questions — UP TO 3 — that most directly answer the user's question. Each must earn its place; prefer 2 decisive, insightful questions over 3 diffuse ones. Do NOT pad to reach 3.",
+  },
+  brief: {
+    id: "brief",
+    label: "Brief",
+    description: "Bottom-line-up-front on one screen — for a 30-second read.",
+    prompt:
+      "Compose a bottom-line-up-front brief that fits roughly one screen. Lead with a single TextBlock (variant: insight) stating the direct answer in one or two sentences. Follow with only the few elements that most support that answer — the most decision-relevant metrics and the single clearest visualization. Keep it terse and scannable and end with at most one short caveat or next step. The reader has about 30 seconds. Choose the minimum that genuinely answers the question — let the data decide whether that is one chart or a couple of stat cards; do not exhaustively explore.",
+    codegenScope:
+      "Output scope: this feeds a one-screen brief. Keep BREADTH tight — do not explore multiple angles. But compute the decision-relevant numbers (results) and whatever chart_data the question naturally warrants; HOW MANY are shown is decided later at compose, so never pre-suppress a chart the analysis produced. Still compute the Computed Findings battery (trend direction/slope/p-value, step-change scan, base-effect flag) — a brief's one-line verdict must rest on computed findings, not phrasing.",
+    maxSubQuestions: 2,
+    planScope:
+      "Generate AT MOST 2 sub-questions — ideally just the single most decisive that directly answers the question. Favor one penetrating question over breadth; this feeds a 30-second brief.",
+  },
+  report: {
+    id: "report",
+    label: "Report",
+    description: "Formal sectioned document with prose and tables — to share.",
+    prompt:
+      "Compose a formal, linear document meant to be read top to bottom and shared. Structure it into titled sections separated by SectionBreak (variant: line); use TextBlock (variant: heading) for section titles and TextBlock (variant: body) for complete, professional prose paragraphs that narrate the analysis. Introduce each visualization in prose before it and interpret it after, with a caption beneath. Prefer a DataTable where precise figures matter. Open with a brief overview section and close with a summary / recommendation. Tone: formal, suitable for emailing leadership or a DOCX export. The number and type of visuals are yours to choose from the data — the constraint is the document FORM, not a chart count.\n" +
+      'METADATA HEADER: immediately after the title, render a compact provenance header as a DefinitionList (NOT a DataTable — a table\'s search/export chrome looks amateurish here) whose items capture the facts you were given: Source (the dataset / warehouse name), Analysis window (the period, when provided), and Data scope ("Full dataset" or "N-row sample — figures are estimates" when a sampling note is present). Include only items you actually have values for; do NOT invent an Author, Reviewers, or Status. This grounds the report as a shareable artifact before the analysis begins.\n' +
+      'COMPARISON TABLES: when the analysis compares two variants, periods, or cohorts (A vs B), present it as a DataTable with columns `Metric | <A> | <B> | Δ | Assessment` — one row per metric. The Δ column holds the signed difference (B − A, e.g. "+0.10pp", "-0.31%"); pass `delta_columns: ["Δ"]` so it colors green for positive and red for negative. The final `Assessment` column is a SHORT prose cell interpreting that row (whether it is good/bad, and a one-line hypothesis for WHY when the delta is notable), so the table argues rather than just tabulates. This comparison-with-assessment table is often the strongest element of the report — lead with it when the question is comparative.\n' +
+      'APPENDIX: close the report with a SectionBreak (label "Appendix") followed by two blocks. (1) Definitions — a DefinitionList (title "Definitions", NOT a DataTable) defining every domain-specific metric, acronym, or non-obvious term used in the report (e.g. a funnel-stage abbreviation, a rate metric), so a new reader isn\'t lost. Only include terms you actually used. (2) Methodology — a TextBlock (variant: body) stating in 1-2 sentences how the analysis was produced: the data window and sample status if given, and that the figures come from the analysis whose code and intermediate data are available in the Notebook view. This makes the report self-contained and its numbers auditable.',
+    codegenScope:
+      "Output scope: this feeds a written report — compute the key figures (results) and the few chart_data / table structures the narrative needs to make its case (typically 2-4). Beyond the Computed Findings battery, also compute the per-group comparisons the prose will lean on (e.g. per-segment rates with a significance test on the gap) so every comparative sentence has a computed value behind it.",
+    maxSubQuestions: 4,
+    planScope:
+      "Generate UP TO 4 sub-questions covering the distinct angles a written report needs. Each must earn its place and not overlap the others; prefer sharp, insightful questions over filler sections.",
+  },
+  "deep-dive": {
+    id: "deep-dive",
+    label: "Deep dive",
+    description: "Exhaustive multi-angle exploration with caveats — to investigate.",
+    prompt:
+      "Compose an exhaustive, multi-angle analysis for someone who wants to understand the question fully. Examine it from every useful angle the data supports — trends, distributions, comparisons, breakdowns, correlations — and interleave a short TextBlock (variant: insight) after each that states the finding. Surface unexpected patterns or outliers the user did not ask about but should know, and include an Annotation (severity: info) noting methodology, data-quality, or sample-size caveats. Use SectionBreak components between major angles and include a DataTable slice where row-level detail helps. End with findings plus open questions. Drive breadth by what the data genuinely supports — go as wide as is warranted, not to a fixed number.",
+    codegenScope:
+      "Output scope: this feeds an exhaustive deep-dive — explore the question from every useful angle the data supports (trends, distributions, comparisons, breakdowns, correlations), computing the multiple charts and result metrics that breadth needs. Depth is wanted too, beyond the Computed Findings battery — apply whichever of the general analytical obligations fit THIS question's shape: DECOMPOSE any headline change into its parts (e.g. composition shift vs within-group change for a rate; volume vs price for revenue); test HETEROGENEITY (does the aggregate story hold in each group, with significance, or is it driven by one); test ROBUSTNESS (discontinuities, outliers, sensitivity to the period chosen); and examine CONSTITUENTS separately (numerator and denominator of any ratio; components of any composite). Emit each as computed results the narrative can bind. Go as wide AND as deep as the data genuinely warrants.",
+    maxSubQuestions: 10,
+    planScope:
+      "Generate 5 OR MORE sub-questions (up to 10), exploring the question from every useful angle the data supports — trends, segments, comparisons, breakdowns, correlations, outliers. Breadth is wanted here: go as wide as the data genuinely warrants.",
+  },
+};
+
+/** Ordered list for the UI (selector renders in this order). */
+export const PURPOSE_LIST: PurposeMode[] = [
+  PURPOSE_MODES.dashboard,
+  PURPOSE_MODES.brief,
+  PURPOSE_MODES.report,
+  PURPOSE_MODES["deep-dive"],
+];
+
+export const DEFAULT_PURPOSE = "dashboard";
+
+/** Old ids → current ids, so persisted defaults and saved vizs keep working. */
+const LEGACY_ALIASES: Record<string, string> = {
+  infographic: "dashboard",
+  "executive-summary": "brief",
+  narrative: "report",
+  "deep-analysis": "deep-dive",
+  presentation: "dashboard", // "Slides" is now an export, not a style
+};
+
+/** Resolve any (possibly legacy) id to a current canonical purpose id. */
+export function resolvePurpose(purposeId: string | null | undefined): string {
+  if (purposeId && PURPOSE_MODES[purposeId]) return purposeId;
+  if (purposeId && LEGACY_ALIASES[purposeId]) return LEGACY_ALIASES[purposeId];
+  return DEFAULT_PURPOSE;
+}
+
+/**
+ * The purpose a persisted spec was RUN with — read from the state.__purpose
+ * stamp the compose pipelines emit — resolved to a canonical id. Null when
+ * the record predates the stamp (caller leaves the dropdown untouched
+ * rather than fabricating a style the run may not have used).
+ */
+export function stampedPurpose(spec: unknown): string | null {
+  const state = (spec as { state?: { __purpose?: unknown } } | null | undefined)?.state;
+  const raw = state?.__purpose;
+  return typeof raw === "string" && raw ? resolvePurpose(raw) : null;
+}
+
+export function getPurposePrompt(purposeId: string): string {
+  return PURPOSE_MODES[resolvePurpose(purposeId)].prompt;
+}
+
+/** Code-gen output-scope block for a mode (scales analysis volume to intent). */
+export function getPurposeCodegenScope(purposeId: string): string {
+  return PURPOSE_MODES[resolvePurpose(purposeId)].codegenScope;
+}
+
+/** Planner target/sharpness block for a mode (scales investigation breadth). */
+export function getPurposePlanScope(purposeId: string): string {
+  return PURPOSE_MODES[resolvePurpose(purposeId)].planScope;
+}
+
+/** Hard cap on total sub-questions for a mode (the dominant cost lever). */
+export function getPurposeMaxSubQuestions(purposeId: string): number {
+  return PURPOSE_MODES[resolvePurpose(purposeId)].maxSubQuestions;
+}

@@ -1,0 +1,360 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+# Least privilege: this workflow runs untrusted PR code (install, build,
+# playwright) and needs only to read the checkout. Every job inherits this;
+# none needs a write token. (OpenSSF Scorecard Token-Permissions.)
+permissions:
+  contents: read
+
+# One in-flight run per ref: a new push cancels the superseded run so rapid
+# PR pushes don't leave docker builds + playwright + golden burning runners.
+# Never cancel on main (post-merge signal must complete).
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+# Dependencies are managed with pnpm. The committed pnpm-lock.yaml is
+# registry-agnostic (content-addressed integrity), so the SAME lockfile
+# installs against a corporate Artifactory mirror on local machines and the
+# public npm registry here in CI. `--frozen-lockfile` guarantees the install
+# matches the lockfile exactly (the equivalent of `npm ci`).
+
+jobs:
+  lint-typecheck-build:
+    name: Lint, Type Check & Build
+    runs-on: ubuntu-latest
+
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        node-version: [20, 22]
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
+
+      - name: Use Node.js ${{ matrix.node-version }}
+        uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
+        with:
+          node-version: ${{ matrix.node-version }}
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Lint
+        run: pnpm run lint
+
+      - name: Data-hygiene guard
+        run: node scripts/check-data-hygiene.mjs
+
+      - name: Modularization ratchet
+        run: pnpm run ratchet
+
+      - name: Package isolation check
+        run: pnpm run isolation
+
+      - name: Format check
+        run: pnpm run format:check
+
+      - name: Type check
+        run: pnpm run type-check
+
+      - name: Build
+        run: pnpm run build
+        env:
+          ANTHROPIC_API_KEY: test-key-for-build
+
+  test:
+    name: Tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
+
+      - name: Use Node.js 22
+        uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      # Build the sandbox image so the docker-gated regression tests actually
+      # run (hardening-smoke, egress-proxy-relay) instead of silently skipping —
+      # the no-new-privileges incident had a green suite while skipped.
+      - name: Build sandbox image
+        run: docker build -t hermetic-sandbox ./docker/sandbox/
+
+      - name: Run tests with coverage
+        run: pnpm test:coverage
+
+  # Python runtime tests: the guard on Python<->JSON contract drift AND the
+  # statistical-runtime correctness suite. Runs on the SAME interpreter + pinned
+  # libs the sandbox image ships (docker/sandbox/Dockerfile) so the numpy/pandas/
+  # scipy-dependent cases (~a third of the suite, incl. the vectorized-aggregate
+  # parity test) actually execute instead of skipping — a bare interpreter left
+  # them silently unrun and validated a Python the product never runs.
+  python-runtime:
+    name: Python Runtime Contract Mirror
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up Python (matches the sandbox image)
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.11"
+
+      - name: Install the sandbox's pinned scientific stack
+        run: pip install pandas==2.2.3 numpy==2.2.4 scipy==1.15.2
+
+      - name: Run runtime tests (contract mirror + statistics)
+        run: python3 -m unittest docker.sandbox.hermetic_runtime.test_runtime
+
+  # The .mcpb Claude Desktop bundle is only built at tag time by release.yml, so
+  # a build-mcpb.mjs / bundle regression was undiscoverable until a release.
+  # Build + smoke it on every PR in its own job (isolated so a bundle flake
+  # never takes down the golden proofs).
+  mcpb-bundle:
+    name: MCPB bundle build + smoke
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm run mcpb:build
+      - run: pnpm run mcpb:smoke
+
+  # Browser e2e: renders a REAL dashboard (self-contained HTML export) in
+  # chromium and asserts it mounts with charts and no errors — the "rendering
+  # half" the offline golden/NDJSON tests can't reach.
+  e2e:
+    name: Browser e2e (dashboard render)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm mcp:build-viewer
+      - run: npx playwright install --with-deps chromium
+      - name: Pre-cache Pyodide wheels for the browser-analysis e2e
+        run: node scripts/cache-pyodide-wheels.mjs
+      - run: pnpm test:e2e
+      - name: Upload Playwright report on failure
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: playwright-report
+          path: playwright-report/
+          retention-days: 14
+          if-no-files-found: ignore
+
+  # Golden transcripts: replay-mode server + journey runner, fully offline
+  # (LLM responses come from committed fixtures in test-fixtures/llm/;
+  # scripts/golden/run-journeys.mjs header documents the recording flow).
+  golden-transcripts:
+    name: Golden Transcripts
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
+
+      - name: Use Node.js 22
+        uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build sandbox image
+        run: docker build -t hermetic-sandbox ./docker/sandbox/
+
+      - name: Build app
+        run: pnpm run build
+        env:
+          ANTHROPIC_API_KEY: test-key-replay-only
+
+      - name: Start server (replay mode) and check journeys
+        env:
+          HERMETIC_LLM_MODE: replay
+          ANTHROPIC_API_KEY: test-key-replay-only
+          # Replay diagnostics: dump full request bytes for every replay
+          # hit/miss into *.hit.json/*.miss.json — a golden failure's artifact
+          # then carries the exact bytes to diff against a local capture.
+          HERMETIC_REPLAY_DEBUG: "1"
+        run: |
+          pnpm start &
+          for i in $(seq 1 60); do
+            curl -sf http://localhost:3000/api/providers >/dev/null && break
+            sleep 2
+          done
+          node scripts/golden/run-journeys.mjs check
+
+      - name: CLI harness proof (offline, no server)
+        env:
+          HERMETIC_LLM_MODE: replay
+          ANTHROPIC_API_KEY: test-key-replay-only
+        run: |
+          # The libraries must be drivable with no Next server in-process
+          # (Phase 1 exit criterion #1). Filename must match the recorded
+          # fixture (the journey runner uploads as fixture.csv).
+          cp test-specs/data/01-saas-mrr.csv /tmp/fixture.csv
+          pnpm cli ask "What is the MRR trend over time?" /tmp/fixture.csv --out /tmp/cli-spec.ndjson
+          grep -q '"path":"/root"' /tmp/cli-spec.ndjson
+          ! grep -q '"value":"error"' /tmp/cli-spec.ndjson
+
+      - name: Harness stays framework-free
+        run: |
+          # The CLI/MCP + harness layers must never import Next (lib is
+          # lint-enforced; this guards the harness files themselves).
+          ! grep -rE 'from "next(/|")' src/cli src/harness src/mcp
+
+      - name: Egress allowlist proof (real containers, internal network)
+        run: npx tsx scripts/egress-proof.ts
+
+      - name: MCP harness proof (offline, real server over stdio)
+        env:
+          HERMETIC_LLM_MODE: replay
+          ANTHROPIC_API_KEY: test-key-replay-only
+        run: |
+          # Same fixtures as the CLI proof; additionally builds and exercises
+          # the embedded viewer end-to-end (mcp-server spec §4 M5).
+          pnpm mcp:build-viewer
+          node scripts/mcp-proof.mjs
+
+      # On a replay miss the middleware writes <hash>.miss.json next to the
+      # fixtures (the attempted params). Upload those plus the received
+      # transcripts so a CI-only divergence can be diffed against the
+      # recorded fixtures without reproducing the runner environment.
+      - name: Upload miss diagnostics
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: golden-miss-diagnostics
+          retention-days: 14
+          path: |
+            test-fixtures/llm/*.miss.json
+            test-fixtures/llm/*.hit.json
+            test-fixtures/golden/*.received.ndjson
+          if-no-files-found: ignore
+
+  # Dependency vulnerability gate. This is DIFF-BASED on purpose: it fails a PR
+  # that INTRODUCES a dependency with a known high/critical advisory, without
+  # red-flagging every PR against the pre-existing backlog (much of which is
+  # transitive through the retained-but-unwired experimental sandbox deps —
+  # e2b/microsandbox — i.e. code the product never runs). Dependabot
+  # (dependabot.yml) drives the backlog down; this stops new vulnerable deps
+  # from landing in the meantime. PR-only (the action requires a base to diff).
+  dependency-review:
+    name: Dependency Review (new-vuln gate)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    if: github.event_name == 'pull_request'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Dependency review
+        uses: actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294 # v5.0.0
+        with:
+          fail-on-severity: high
+
+  # Phase 1a of the WASM sandbox: run the wasm executor's compute-parity test
+  # (Pyodide-in-Node against the real hermetic_runtime) — opt-in via
+  # HERMETIC_WASM_TEST so it stays out of the default fast suite. CI-only; the
+  # runtime is flag-gated off for users until the §7 escape suite lands.
+  wasm-parity:
+    name: WASM executor parity (Pyodide)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: WASM executor compute-parity
+        env:
+          HERMETIC_WASM_TEST: "1"
+        run: pnpm exec vitest run src/lib/sandbox/wasm/__tests__/executor.test.ts src/lib/sandbox/wasm/__tests__/end-to-end.test.ts src/lib/sandbox/wasm/__tests__/parquet-convert.test.ts src/lib/sandbox/__tests__/remote-fetch-materialize.test.ts
+
+  # The Rust egress core (§6a decision logic: IP classification, host allowlist,
+  # redirect/rebind guards, byte-cap) — cargo unit tests, no network.
+  rust-egress-core:
+    name: Rust egress core (cargo test)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: cargo test
+        working-directory: rust/egress-core
+        run: cargo test --locked
+
+  # The Tauri desktop shell — cargo check against the installed webkit (needs the
+  # gtk/webkit dev headers on the runner). Build-verifies the shell + its §7
+  # capability/CSP config compiles; the full packaged build is Phase 3.
+  tauri-shell:
+    name: Tauri shell (cargo check)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Install webkit/gtk dev headers
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev
+      - name: cargo check
+        working-directory: src-tauri
+        run: cargo check --locked
+
+  # Desktop packaging smoke (build log D15): the Next STANDALONE server, assembled
+  # into a sidecar, actually SERVES — GET /api/health → 200 under the forced wasm
+  # runtime. This is what the Tauri shell (cargo check above) wraps and spawns.
+  desktop-sidecar:
+    name: Desktop sidecar smoke
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Assemble the sidecar + assert it serves /api/health
+        run: node scripts/desktop-sidecar-smoke.mjs

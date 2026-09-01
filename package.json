@@ -1,0 +1,18 @@
+{
+  "name": "local-analytics-copilot",
+  "version": "1.0.0-rc.1",
+  "private": true,
+  "description": "Local-first, evidence-backed analytics assistant and Windows desktop app",
+  "license": "MIT",
+  "scripts": {
+    "dev": "node scripts/run-product.mjs web",
+    "desktop:dev": "node scripts/run-product.mjs desktop",
+    "desktop:install": "pnpm --dir apps/desktop install --frozen-lockfile",
+    "desktop:test": "pnpm --dir apps/desktop test",
+    "desktop:type-check": "pnpm --dir apps/desktop type-check",
+    "desktop:lint": "pnpm --dir apps/desktop lint",
+    "web:build": "pnpm --dir apps/desktop build",
+    "desktop:build": "pnpm --dir apps/desktop desktop:build"
+  },
+  "packageManager": "pnpm@10.18.1"
+}

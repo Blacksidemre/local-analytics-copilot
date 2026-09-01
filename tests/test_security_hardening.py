@@ -84,6 +84,15 @@ def test_local_model_and_network_guards():
         validate_external_url("http://127.0.0.1/private")
 
 
+def test_bridge_origins_require_explicit_allowlist(tmp_path, monkeypatch):
+    monkeypatch.setenv("LAC_WORKSPACE", str(tmp_path / "workspace"))
+    monkeypatch.setenv("LAC_CONFIG_DIR", str(tmp_path / "config"))
+    monkeypatch.setenv("LAC_BRIDGE_ORIGINS", "*")
+    get_settings.cache_clear()
+    with pytest.raises(ValueError, match="wildcard"):
+        get_settings().parsed_bridge_origins()
+
+
 def test_web_query_blocks_pii_and_secrets():
     assert validate_public_web_query("BDDK NPL mevzuatı")
     with pytest.raises(PermissionError):

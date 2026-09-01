@@ -1,0 +1,86 @@
+"use client";
+
+import { ResponsiveStream } from "@nivo/stream";
+import {
+  useColorMap,
+  useNivoTheme,
+  unwrapChartData,
+  useReducedMotion,
+} from "@/components/theme/chart-theme";
+import { useThemeConfig } from "@/components/theme/theme-config";
+import { useChartExpanded } from "./chart-expand-wrapper";
+import { ChartEmptyState } from "./chart-empty-state";
+
+interface StreamChartProps {
+  title: string | null;
+  data: Record<string, unknown>[];
+  keys: string[];
+  color_map: Record<string, string> | null;
+  offset: "silhouette" | "wiggle" | "expand" | "none" | null;
+  curve: "basis" | "cardinal" | "linear" | "monotoneX" | null;
+}
+
+export function StreamChartComponent({ props }: { props: StreamChartProps }) {
+  const theme = useNivoTheme();
+  const reducedMotion = useReducedMotion();
+  const { chart } = useThemeConfig();
+  const isExpanded = useChartExpanded();
+  const data = unwrapChartData(props.data);
+  const colors = useColorMap(props.keys, props.color_map);
+
+  if (data.length === 0 || !props.keys || props.keys.length === 0) {
+    return <ChartEmptyState height={chart.height} />;
+  }
+
+  return (
+    <div className={`w-full${isExpanded ? " h-full flex flex-col" : ""}`}>
+      {props.title && (
+        <h3
+          className="mb-2 text-t-secondary"
+          style={{ fontSize: "var(--chart-title-size)", fontWeight: "var(--chart-title-weight)" }}
+        >
+          {props.title}
+        </h3>
+      )}
+      <div
+        className={isExpanded ? "flex-1" : ""}
+        style={{ height: isExpanded ? undefined : chart.height }}
+      >
+        <ResponsiveStream
+          animate={!reducedMotion}
+          data={data as Record<string, number>[]}
+          keys={props.keys}
+          theme={theme}
+          colors={colors}
+          margin={{ top: 20, right: 110, bottom: 40, left: 60 }}
+          offsetType={props.offset ?? "silhouette"}
+          curve={props.curve ?? "basis"}
+          borderColor={{ theme: "background" }}
+          enableGridX
+          enableGridY={false}
+          axisBottom={{
+            tickSize: 5,
+            tickPadding: 5,
+            tickRotation: 0,
+          }}
+          axisLeft={{
+            tickSize: 5,
+            tickPadding: 5,
+            tickRotation: 0,
+          }}
+          legends={[
+            {
+              anchor: "bottom-right",
+              direction: "column",
+              translateX: 100,
+              itemWidth: 80,
+              itemHeight: 20,
+              symbolSize: chart.legendSymbolSize,
+              symbolShape: "circle",
+            },
+          ]}
+        />
+      </div>
+    </div>
+  );
+}

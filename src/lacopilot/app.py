@@ -2,27 +2,49 @@ from __future__ import annotations
 
 import hmac
 import uuid
-from typing import Literal
+from collections.abc import Callable
+from typing import Any, Literal
 
-from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from pydantic import BaseModel, Field
 
 from lacopilot import __version__
 from lacopilot.actions import ActionStore
+from lacopilot.agent_report import create_agent_report
+from lacopilot.analysis_history import AnalysisHistoryStore
+from lacopilot.analyst_document_reports import (
+    create_analyst_html_report,
+    create_analyst_pdf_report,
+)
+from lacopilot.analyst_pipeline import run_analyst_pipeline
+from lacopilot.analyst_report import create_analyst_excel_report
 from lacopilot.audit import audit
 from lacopilot.config import get_settings
 from lacopilot.conversations import ConversationStore
+from lacopilot.dataset_uploads import save_uploaded_dataset
 from lacopilot.hardware import detect_hardware
+from lacopilot.ingestion import SUPPORTED_TABLE_EXTENSIONS, IngestionError, source_manifest
+from lacopilot.investigate_runtime import build_context_from_profile, run_local_investigation
 from lacopilot.knowledge import KnowledgeBase
 from lacopilot.llm import OllamaAgent
 from lacopilot.memory import LocalMemory
 from lacopilot.personality import load_profiles, save_custom_profile
 from lacopilot.privacy import privacy_status
+from lacopilot.quick_analysis import build_quick_dashboard, interpret_profile
+from lacopilot.security import resolve_workspace_path, validate_ollama_endpoint
 from lacopilot.tools import TOOL_MAP
 from lacopilot.tools.data_tools import profile_dataset
 
 app = FastAPI(title="Local Analytics Copilot", version=__version__)
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=get_settings().parsed_bridge_origins(),
+    allow_credentials=False,
+    allow_methods=["GET", "POST", "DELETE", "OPTIONS"],
+    allow_headers=["Authorization", "Content-Type", "X-LAC-Token"],
+)
 
 
 @app.middleware("http")
@@ -62,6 +84,56 @@ class AnalyzeRequest(BaseModel):
     sheet_name: str = Field(default="0", max_length=200)
 
 
+class DatasetProfileRequest(BaseModel):
+    file_path: str = Field(min_length=1, max_length=1000)
+    sheet_name: str = Field(default="0", max_length=200)
+
+
+class QuickAnalysisRequest(DatasetProfileRequest):
+    question: str = Field(default="", max_length=20_000)
+    interpret: bool = True
+    language: str = Field(default="tr", max_length=16)
+    model: str | None = Field(default=None, max_length=200)
+
+
+class AnalystAnalysisRequest(DatasetProfileRequest):
+    target_column: str = Field(min_length=1, max_length=200)
+    target_kind: Literal["binary", "continuous", "categorical"] | None = None
+    predictor_columns: list[str] | None = Field(default=None, max_length=50)
+    interpret: bool = True
+    question: str = Field(default="", max_length=20_000)
+    language: str = Field(default="tr", max_length=16)
+    model: str | None = Field(default=None, max_length=200)
+
+
+class AnalystReportRequest(AnalystAnalysisRequest):
+    output_name: str = Field(default="analyst_report.xlsx", min_length=1, max_length=200)
+
+
+class AnalystHtmlReportRequest(AnalystAnalysisRequest):
+    output_name: str = Field(default="analyst_report.html", min_length=1, max_length=200)
+
+
+class AnalystPdfReportRequest(AnalystAnalysisRequest):
+    output_name: str = Field(default="analyst_report.pdf", min_length=1, max_length=200)
+
+
+class AgentAnalysisRequest(DatasetProfileRequest):
+    question: str = Field(min_length=1, max_length=4000)
+    target_column: str | None = Field(default=None, min_length=1, max_length=200)
+    target_kind: Literal["binary", "continuous", "categorical"] | None = None
+    predictor_columns: list[str] | None = Field(default=None, max_length=20)
+    language: Literal["tr", "en"] = "tr"
+    model: str | None = Field(default=None, max_length=200)
+    save_history: bool = True
+
+
+class AgentReportRequest(BaseModel):
+    run_id: str = Field(pattern=r"^[0-9a-f]{32}$")
+    format: Literal["xlsx", "html", "pdf"]
+    output_name: str | None = Field(default=None, min_length=1, max_length=200)
+
+
 class KnowledgeIngestRequest(BaseModel):
     file_path: str = Field(min_length=1, max_length=1000)
     embed_model: str | None = Field(default=None, max_length=200)
@@ -94,9 +166,63 @@ def _store() -> ConversationStore:
     return ConversationStore(get_settings().conversations_db)
 
 
+def _analysis_history() -> AnalysisHistoryStore:
+    return AnalysisHistoryStore(get_settings().analysis_history_db)
+
+
 @app.get("/health")
 def health():
-    return {"status": "ok", "version": __version__}
+    return {
+        "status": "ok",
+        "service": "local-analytics-copilot",
+        "version": __version__,
+        "data_bridge": {"status": "ready", "api_version": 1},
+    }
+
+
+@app.get("/api/v1/health")
+def bridge_health():
+    import json
+    import urllib.request
+
+    settings = get_settings()
+    ollama = {
+        "status": "unavailable",
+        "models": [],
+        "configured_model": settings.model,
+        "configured_model_available": False,
+    }
+    try:
+        host = validate_ollama_endpoint(
+            settings.ollama_host,
+            allow_remote=settings.allow_remote_ollama,
+        )
+        with urllib.request.urlopen(host + "/api/tags", timeout=2) as r:
+            payload = json.load(r)
+        models = [
+            item.get("name") or item.get("model")
+            for item in payload.get("models", [])
+            if item.get("name") or item.get("model")
+        ]
+        ollama = {
+            "status": "ready",
+            "models": models,
+            "configured_model": settings.model,
+            "configured_model_available": settings.model in models,
+        }
+    except Exception as exc:
+        ollama["reason"] = str(exc)[:300]
+    return {
+        "status": "ready" if ollama["status"] == "ready" else "degraded",
+        "version": __version__,
+        "bridge_api_version": 1,
+        "data_bridge": {
+            "status": "ready",
+            "parser": "lac-deterministic-data-bridge",
+            "supported_extensions": sorted(SUPPORTED_TABLE_EXTENSIONS),
+        },
+        "ollama": ollama,
+    }
 
 
 @app.get("/api/hardware")
@@ -185,6 +311,354 @@ def analyze(req: AnalyzeRequest):
         return profile_dataset(req.file_path, req.sheet_name)
     except Exception as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+def _profile_or_http_error(file_path: str, sheet_name: str) -> dict:
+    try:
+        return profile_dataset(file_path, sheet_name)
+    except IngestionError as exc:
+        raise HTTPException(status_code=422, detail=exc.as_dict()) from exc
+    except (FileNotFoundError, PermissionError, ValueError) as exc:
+        raise HTTPException(
+            status_code=400,
+            detail={"code": "invalid_dataset", "message": str(exc)},
+        ) from exc
+
+
+@app.post("/api/v1/datasets/profile")
+def dataset_profile(req: DatasetProfileRequest):
+    profile = _profile_or_http_error(req.file_path, req.sheet_name)
+    return {
+        "status": "profiled",
+        "file_path": req.file_path,
+        "selected_sheet": req.sheet_name,
+        "profile": profile,
+        "dashboard": build_quick_dashboard(profile),
+    }
+
+
+@app.post("/api/v1/datasets/upload", status_code=201)
+async def dataset_upload(
+    file: UploadFile = File(...),
+    sheet_name: str | None = Form(default=None),
+    run_profile: bool = Form(default=True),
+    interpret: bool = Form(default=False),
+    question: str = Form(default=""),
+    language: str = Form(default="tr"),
+    model: str | None = Form(default=None),
+):
+    try:
+        destination, manifest = await save_uploaded_dataset(file)
+    except IngestionError as exc:
+        raise HTTPException(status_code=422, detail=exc.as_dict()) from exc
+    settings = get_settings()
+    relative = str(destination.resolve().relative_to(settings.workspace.resolve()))
+    response = {
+        "status": "uploaded",
+        "file_path": relative,
+        "manifest": manifest,
+    }
+    if manifest["format"] in {"xlsx", "xlsm"} and sheet_name is None:
+        nonempty_sheets = [sheet for sheet in manifest["sheets"] if not sheet["empty"]]
+        if len(nonempty_sheets) > 1:
+            response["status"] = "sheet_selection_required"
+            response["sheet_options"] = nonempty_sheets
+            return response
+        if nonempty_sheets:
+            sheet_name = nonempty_sheets[0]["name"]
+    selected_sheet = sheet_name or "0"
+    if run_profile:
+        profile = _profile_or_http_error(relative, selected_sheet)
+        response["status"] = "profiled"
+        response["selected_sheet"] = selected_sheet
+        response["profile"] = profile
+        response["dashboard"] = build_quick_dashboard(profile)
+        if interpret:
+            response["interpretation"] = interpret_profile(
+                profile,
+                question=question,
+                language=language,
+                model=model,
+            )
+    return response
+
+
+@app.get("/api/v1/datasets/manifest")
+def dataset_manifest(file_path: str):
+    settings = get_settings()
+    try:
+        path = resolve_workspace_path(settings.workspace, file_path)
+        return source_manifest(path)
+    except IngestionError as exc:
+        raise HTTPException(status_code=422, detail=exc.as_dict()) from exc
+    except (FileNotFoundError, PermissionError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/api/v1/analysis/quick")
+def quick_analysis(req: QuickAnalysisRequest):
+    profile = _profile_or_http_error(req.file_path, req.sheet_name)
+    result = {
+        "status": "completed",
+        "mode": "quick",
+        "file_path": req.file_path,
+        "profile": profile,
+        "dashboard": build_quick_dashboard(profile),
+        "interpretation": {"status": "skipped"},
+    }
+    if req.interpret:
+        result["interpretation"] = interpret_profile(
+            profile,
+            question=req.question,
+            language=req.language,
+            model=req.model,
+        )
+    return result
+
+
+@app.post("/api/v1/analysis/analyst")
+def analyst_analysis(req: AnalystAnalysisRequest):
+    try:
+        return run_analyst_pipeline(
+            req.file_path,
+            req.target_column,
+            sheet_name=req.sheet_name,
+            target_kind=req.target_kind,
+            predictor_columns=req.predictor_columns,
+            interpret=req.interpret,
+            question=req.question,
+            language=req.language,
+            model=req.model,
+        )
+    except IngestionError as exc:
+        raise HTTPException(status_code=422, detail=exc.as_dict()) from exc
+    except (FileNotFoundError, KeyError, PermissionError, ValueError) as exc:
+        raise HTTPException(
+            status_code=422,
+            detail={"code": "invalid_analysis_request", "message": str(exc)},
+        ) from exc
+
+
+@app.post("/api/v1/analysis/agent")
+def agent_analysis(req: AgentAnalysisRequest):
+    if (req.target_column is None) != (req.target_kind is None):
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "code": "incomplete_target_semantics",
+                "message": "Hedef analizi için hem hedef sütun hem hedef türü seçilmelidir.",
+                "recoverable": True,
+            },
+        )
+    profile = _profile_or_http_error(req.file_path, req.sheet_name)
+    try:
+        context = build_context_from_profile(
+            req.file_path,
+            profile,
+            sheet_name=req.sheet_name,
+            approved_target_columns=[req.target_column] if req.target_column else [],
+            approved_target_kinds=(
+                {req.target_column: req.target_kind}
+                if req.target_column is not None and req.target_kind is not None
+                else {}
+            ),
+            approved_predictor_columns=req.predictor_columns or [],
+        )
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "code": "invalid_agent_context",
+                "message": str(exc),
+                "recoverable": True,
+            },
+        ) from exc
+    agent = run_local_investigation(
+        req.question,
+        context,
+        language=req.language,
+        model=req.model,
+    )
+    history = {"status": "disabled"}
+    if req.save_history:
+        try:
+            settings = get_settings()
+            source_path = resolve_workspace_path(settings.workspace, req.file_path)
+            history_id = _analysis_history().record_verified_agent_run(
+                dataset_ref=req.file_path,
+                source_path=source_path,
+                sheet_name=req.sheet_name,
+                question=req.question,
+                agent=agent,
+            )
+            history = (
+                {"status": "saved", "run_id": history_id}
+                if history_id is not None
+                else {"status": "not_saved", "reason": "run_not_verified"}
+            )
+        except (OSError, ValueError):
+            history = {"status": "not_saved", "reason": "storage_error"}
+    return {
+        "schema_version": "agent-api.v1",
+        "status": agent["status"],
+        "mode": "agent",
+        "file_path": req.file_path,
+        "selected_sheet": req.sheet_name,
+        "dataset": {
+            "rows": profile["rows"],
+            "columns": profile["columns"],
+            "total_missing_cells": profile["total_missing_cells"],
+            "missing_cell_pct": profile["missing_cell_pct"],
+            "exact_duplicate_copies": profile["duplicate_rows"],
+            "schema": profile["schema"],
+        },
+        "dashboard": build_quick_dashboard(profile),
+        "agent": agent,
+        "history": history,
+    }
+
+
+@app.get("/api/v1/analysis/history")
+def analysis_history(limit: int = 50, dataset_id: str | None = None):
+    if not 1 <= limit <= 100:
+        raise HTTPException(
+            status_code=422,
+            detail={"code": "invalid_history_limit", "message": "limit 1-100 olmalıdır."},
+        )
+    return {
+        "schema_version": "analysis-history-list.v1",
+        "runs": _analysis_history().list_runs(limit=limit, dataset_id=dataset_id),
+    }
+
+
+@app.get("/api/v1/analysis/history/{run_id}")
+def analysis_history_run(run_id: str):
+    run = _analysis_history().get_run(run_id)
+    if run is None:
+        raise HTTPException(
+            status_code=404,
+            detail={"code": "history_run_not_found", "message": "Analiz kaydı bulunamadı."},
+        )
+    return {"schema_version": "analysis-history.v1", "run": run}
+
+
+@app.delete("/api/v1/analysis/history/{run_id}")
+def delete_analysis_history_run(run_id: str):
+    if not _analysis_history().delete_run(run_id):
+        raise HTTPException(
+            status_code=404,
+            detail={"code": "history_run_not_found", "message": "Analiz kaydı bulunamadı."},
+        )
+    return {"status": "deleted", "run_id": run_id}
+
+
+@app.post("/api/v1/analysis/agent/report")
+def agent_report(req: AgentReportRequest):
+    run = _analysis_history().get_run(req.run_id)
+    if run is None:
+        raise HTTPException(
+            status_code=404,
+            detail={"code": "history_run_not_found", "message": "Analiz kaydı bulunamadı."},
+        )
+    try:
+        report = create_agent_report(run, req.format, req.output_name)
+        settings = get_settings()
+        output = resolve_workspace_path(settings.workspace, report["output"])
+        verification = report["verification"]
+        return FileResponse(
+            output,
+            media_type=report["media_type"],
+            filename=report["filename"],
+            headers={
+                "X-LAC-Report-Schema": report["schema_version"],
+                "X-LAC-Report-Verification": verification["status"],
+                "X-LAC-Report-Findings": str(verification["finding_count"]),
+                "X-LAC-Report-Cards": str(verification["dashboard_card_count"]),
+            },
+        )
+    except (KeyError, PermissionError, ValueError) as exc:
+        raise HTTPException(
+            status_code=422,
+            detail={"code": "invalid_agent_report_request", "message": str(exc)},
+        ) from exc
+    except RuntimeError as exc:
+        raise HTTPException(
+            status_code=500,
+            detail={"code": "report_verification_failed", "message": str(exc)},
+        ) from exc
+
+
+def _verified_analyst_report_response(
+    req: AnalystAnalysisRequest,
+    output_name: str,
+    report_factory: Callable[[dict[str, Any], str], dict[str, Any]],
+) -> FileResponse:
+    try:
+        payload = run_analyst_pipeline(
+            req.file_path,
+            req.target_column,
+            sheet_name=req.sheet_name,
+            target_kind=req.target_kind,
+            predictor_columns=req.predictor_columns,
+            interpret=req.interpret,
+            question=req.question,
+            language=req.language,
+            model=req.model,
+        )
+        report = report_factory(payload, output_name)
+        settings = get_settings()
+        output = resolve_workspace_path(settings.workspace, report["output"])
+        verification = report["verification"]
+        return FileResponse(
+            output,
+            media_type=report["media_type"],
+            filename=report["filename"],
+            headers={
+                "X-LAC-Report-Schema": report["schema_version"],
+                "X-LAC-Report-Verification": verification["status"],
+                "X-LAC-Report-Findings": str(verification["finding_count"]),
+                "X-LAC-Report-Cards": str(verification["dashboard_card_count"]),
+            },
+        )
+    except IngestionError as exc:
+        raise HTTPException(status_code=422, detail=exc.as_dict()) from exc
+    except (FileNotFoundError, KeyError, PermissionError, ValueError) as exc:
+        raise HTTPException(
+            status_code=422,
+            detail={"code": "invalid_report_request", "message": str(exc)},
+        ) from exc
+    except RuntimeError as exc:
+        raise HTTPException(
+            status_code=500,
+            detail={"code": "report_verification_failed", "message": str(exc)},
+        ) from exc
+
+
+@app.post("/api/v1/analysis/analyst/report")
+def analyst_report(req: AnalystReportRequest):
+    return _verified_analyst_report_response(
+        req,
+        req.output_name,
+        create_analyst_excel_report,
+    )
+
+
+@app.post("/api/v1/analysis/analyst/report/html")
+def analyst_html_report(req: AnalystHtmlReportRequest):
+    return _verified_analyst_report_response(
+        req,
+        req.output_name,
+        create_analyst_html_report,
+    )
+
+
+@app.post("/api/v1/analysis/analyst/report/pdf")
+def analyst_pdf_report(req: AnalystPdfReportRequest):
+    return _verified_analyst_report_response(
+        req,
+        req.output_name,
+        create_analyst_pdf_report,
+    )
 
 
 @app.post("/api/chat")

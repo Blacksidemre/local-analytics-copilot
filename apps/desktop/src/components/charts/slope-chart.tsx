@@ -1,0 +1,65 @@
+"use client";
+
+import type { Data, Layout } from "plotly.js";
+import { PlotlyChart } from "./plotly-wrapper";
+import { useColorMap, unwrapChartData } from "@/components/theme/chart-theme";
+import { useThemeConfig } from "@/components/theme/theme-config";
+import { useChartExpanded } from "./chart-expand-wrapper";
+import { ChartEmptyState } from "./chart-empty-state";
+
+interface SlopeChartProps {
+  title: string | null;
+  data: { label: string; start: number; end: number }[];
+  start_label: string | null;
+  end_label: string | null;
+  color_map: Record<string, string> | null;
+}
+
+export function SlopeChartComponent({ props }: { props: SlopeChartProps }) {
+  const { chart } = useThemeConfig();
+  const isExpanded = useChartExpanded();
+  const data = unwrapChartData(props.data) as unknown as SlopeChartProps["data"];
+  const labels = data.map((d) => d.label);
+  const colors = useColorMap(labels, props.color_map);
+
+  if (data.length === 0) return <ChartEmptyState height={chart.height} />;
+
+  const startLabel = props.start_label ?? "Start";
+  const endLabel = props.end_label ?? "End";
+
+  const traces: Data[] = data.map((d, i) => ({
+    type: "scatter" as const,
+    x: [startLabel, endLabel],
+    y: [d.start, d.end],
+    mode: "text+lines+markers" as const,
+    name: d.label,
+    text: [d.label, d.label],
+    textposition: "middle right" as const,
+    line: { color: colors[i], width: 2 },
+    marker: { color: colors[i], size: 8 },
+  }));
+
+  const layout: Partial<Layout> = {
+    showlegend: false,
+    xaxis: {
+      fixedrange: true,
+      type: "category" as const,
+    },
+  };
+
+  return (
+    <div className={`w-full${isExpanded ? " h-full flex flex-col" : ""}`}>
+      {props.title && (
+        <h3
+          className="mb-2 text-t-secondary"
+          style={{ fontSize: "var(--chart-title-size)", fontWeight: "var(--chart-title-weight)" }}
+        >
+          {props.title}
+        </h3>
+      )}
+      <div className={isExpanded ? "flex-1" : ""}>
+        <PlotlyChart data={traces} layout={layout} height={isExpanded ? undefined : chart.height} />
+      </div>
+    </div>
+  );
+}

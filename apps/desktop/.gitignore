@@ -1,0 +1,84 @@
+# See https://help.github.com/articles/ignoring-files/ for more about ignoring files.
+
+# dependencies
+/node_modules
+package-lock.json
+/.pnp
+.pnp.*
+.yarn/*
+!.yarn/patches
+!.yarn/plugins
+!.yarn/releases
+!.yarn/versions
+
+# testing
+/coverage
+
+# next.js
+/.next/
+/out/
+
+# production
+/build
+
+# misc
+.DS_Store
+*.pem
+
+# debug
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+
+# runtime logs (accidentally committed before; never track)
+*.log
+
+# env files
+.env*
+!.env.example
+.bigquery-credentials.json
+.warehouse-connections.json
+
+# runtime config & user data: ignore everything under data/ EXCEPT test
+# fixtures, which need to be tracked so CI can run fixture-dependent tests.
+data/*
+!data/test-fixtures/
+!data/test-fixtures/**
+
+# vercel
+.vercel
+
+# typescript
+*.tsbuildinfo
+next-env.d.ts
+
+# python bytecode (hermetic_runtime, skill helpers)
+__pycache__/
+*.pyc
+test-fixtures/golden/*.received.ndjson
+test-fixtures/llm/*.miss.json
+
+# MCP embedded viewer build artifact
+src/mcp/viewer/dist/
+
+# .mcpb bundle build (release-path phase 2)
+/dist/
+*.mcpb
+batch-evals/
+
+# Playwright e2e
+e2e/.artifacts/
+test-results/
+playwright-report/
+rust/**/target/
+src-tauri/target/
+src-tauri/gen/schemas/
+
+# Desktop sidecar bundle (assembled by scripts/build-desktop-sidecar.mjs) — large build artifact
+/src-tauri/sidecar/*
+!/src-tauri/sidecar/.gitkeep
+
+# Packaged deterministic LAC backend (assembled by scripts/build_lac_backend.py)
+/src-tauri/lac-backend/*
+!/src-tauri/lac-backend/.gitkeep

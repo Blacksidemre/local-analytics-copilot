@@ -1,0 +1,298 @@
+import { NextResponse } from "next/server";
+import { v4 as uuidv4 } from "uuid";
+import { apiError } from "@/app/lib/api-error";
+import { parseCSV, toCSVText } from "@/lib/csv/parser";
+import { extractSchema } from "@/lib/csv/schema";
+import { storeCSV, storeGeoJSON, storeWorkbookManifest } from "@/lib/csv/storage";
+import { loadSavedVisualization, saveNewVersion } from "@/lib/saved/storage";
+import { schemasCompatible, schemaFingerprint } from "@/lib/saved/schema-compat";
+import { executeSandbox } from "@/lib/sandbox";
+import { getRunId, runWithRunId } from "@/lib/run-context";
+import { ensureWarmSandboxReady } from "@/lib/sandbox/warm-sandbox";
+import { prepareWarmSandbox } from "@/lib/sandbox";
+import type { AdditionalFile } from "@/lib/sandbox";
+import { parseExcelMeta, sheetToCSV } from "@/lib/excel/parser";
+import { parseGeoJSON, isGeoJSONObject } from "@/lib/geojson/parser";
+import { sanitizeSheetName } from "@/lib/llm/prompts";
+import type { SandboxRuntimeId } from "@/lib/constants";
+import { getActiveSandboxRuntime } from "@/lib/runtime-config";
+import type { CSVSchema, WorkbookManifest } from "@/lib/contracts/data-schema";
+import type { SandboxExecutionResult } from "@/lib/contracts/execution";
+import type { CachedArtifacts } from "@/lib/contracts/investigation";
+import { rehydrateSpec } from "@/lib/saved/rehydrate-spec";
+import type { ParsedCSV } from "@/lib/csv/parser";
+
+export async function POST(request: Request, ctx: { params: Promise<{ id: string }> }) {
+  // Run scope (finding 03): mint a runId so getRunId() inside the handler
+  // resolves — the sandbox run label + cost-row run_id depend on it.
+  return runWithRunId(() => handleRerun(request, ctx));
+}
+
+async function handleRerun(
+  request: Request,
+  { params }: { params: Promise<{ id: string }> }
+): Promise<Response> {
+  try {
+    const { id: vizId } = await params;
+
+    const formData = await request.formData();
+    const file = formData.get("file") as File | null;
+    if (!file) {
+      return NextResponse.json({ error: "No file provided" }, { status: 400 });
+    }
+
+    // Golden source: runtime from shared settings only.
+    const runtime: SandboxRuntimeId = getActiveSandboxRuntime();
+
+    // 1. Load saved viz
+    const savedViz = await loadSavedVisualization(vizId);
+
+    // 2. Detect if saved viz was a workbook (multi-sheet) viz
+    const isWorkbookViz = !!savedViz.workbook;
+    const isExcelUpload = file.name.toLowerCase().endsWith(".xlsx");
+
+    // 3. Parse uploaded file and set up storage + sandbox
+    let newCsvId: string;
+    let newSchema: CSVSchema;
+    let normalizedCsv: string;
+    let geojsonText: string | undefined;
+
+    if (isWorkbookViz && isExcelUpload) {
+      // Workbook rerun: parse ALL sheets from uploaded XLSX
+      const wbResult = await parseWorkbookForRerun(file, runtime);
+      if ("error" in wbResult) {
+        return NextResponse.json({ error: wbResult.error }, { status: 400 });
+      }
+      newCsvId = wbResult.primaryCsvId;
+      newSchema = wbResult.primarySchema;
+      normalizedCsv = wbResult.primaryCsv;
+    } else {
+      // Single-file rerun (CSV, GeoJSON, JSON, or non-workbook XLSX)
+      const parseResult = await parseUploadedFile(file);
+      if ("error" in parseResult) {
+        return NextResponse.json({ error: parseResult.error }, { status: 400 });
+      }
+      normalizedCsv = parseResult.normalizedCsv;
+      geojsonText = parseResult.geojsonText;
+      newCsvId = uuidv4();
+      newSchema = extractSchema(parseResult.parsed, newCsvId, file.name);
+      if (geojsonText) newSchema.has_geojson = true;
+
+      await storeCSV(newCsvId, normalizedCsv, newSchema);
+      if (geojsonText) await storeGeoJSON(newCsvId, geojsonText);
+      await ensureWarmSandboxReady(newCsvId, normalizedCsv, runtime, geojsonText);
+    }
+
+    // 4. Build an expected schema from saved viz's CSV to compare
+    const savedParsed = parseCSV(savedViz.csvContent);
+    const savedSchema = extractSchema(savedParsed, "saved", savedViz.meta.csvFilename);
+
+    const isCompatible = schemasCompatible(savedSchema, newSchema);
+
+    // 5. Incompatible path — return info for client to re-query
+    if (!isCompatible) {
+      return NextResponse.json({
+        schemaMatch: false,
+        csvId: newCsvId,
+        schema: newSchema,
+        question: savedViz.meta.question,
+      });
+    }
+
+    // 6. Compatible path — re-execute saved code with new data
+    const execResult = await executeSandbox(normalizedCsv, savedViz.generatedCode, {
+      runtime,
+      geojsonContent: geojsonText,
+      csvId: newCsvId,
+      // Container attribution label (WS-D) — injected here because the
+      // sandbox layer never reads run-context itself.
+      runId: getRunId(),
+    });
+
+    if (!execResult.success) {
+      // Code failed on new data — fall back to incompatible path
+      return NextResponse.json({
+        schemaMatch: false,
+        csvId: newCsvId,
+        schema: newSchema,
+        question: savedViz.meta.question,
+      });
+    }
+
+    const successResult = execResult as SandboxExecutionResult;
+
+    // 7. Clone spec and inject new data
+    const newSpec = rehydrateSpec(savedViz.spec, savedViz.artifacts, successResult);
+
+    // 8. Build new artifacts
+    const newArtifacts: CachedArtifacts = {
+      code: savedViz.generatedCode,
+      question: savedViz.meta.question,
+      results: successResult.results,
+      chart_data: successResult.chart_data,
+      datasets: successResult.datasets ?? {},
+      execution_ms: successResult.execution_ms,
+    };
+
+    const fingerprint = schemaFingerprint(newSchema);
+
+    // 9. Auto-save as new version
+    const meta = await saveNewVersion(vizId, {
+      csvFilename: file.name,
+      csvContent: normalizedCsv,
+      generatedCode: savedViz.generatedCode,
+      spec: newSpec,
+      artifacts: newArtifacts,
+      schemaFingerprint: fingerprint,
+    });
+
+    return NextResponse.json({
+      schemaMatch: true,
+      spec: newSpec,
+      artifacts: newArtifacts,
+      meta,
+      csvId: newCsvId,
+      schema: newSchema,
+    });
+  } catch (err) {
+    return apiError("/api/vizs/[id]/rerun", err, "Rerun failed");
+  }
+}
+
+// ── Workbook rerun ───────────────────────────────────────────────────
+
+interface WorkbookRerunOk {
+  primaryCsvId: string;
+  primarySchema: CSVSchema;
+  primaryCsv: string;
+}
+
+/**
+ * Parse all sheets from an uploaded XLSX, store each sheet's CSV,
+ * create a workbook manifest, and prepare a warm sandbox with all sheets.
+ */
+async function parseWorkbookForRerun(
+  file: File,
+  runtime: SandboxRuntimeId
+): Promise<WorkbookRerunOk | { error: string }> {
+  const buffer = Buffer.from(await file.arrayBuffer());
+  const { sheets, workbook } = await parseExcelMeta(buffer);
+  if (sheets.length === 0) return { error: "Excel file has no sheets" };
+
+  const manifestSheets: WorkbookManifest["sheets"] = [];
+  const additionalFiles: AdditionalFile[] = [];
+  let primaryCsvId = "";
+  let primarySchema: CSVSchema | null = null;
+  let primaryCsv = "";
+
+  for (let i = 0; i < sheets.length; i++) {
+    const sheet = sheets[i];
+    const csvText = sheetToCSV(workbook, sheet.name);
+    const parsed = parseCSV(csvText);
+    const csvId = uuidv4();
+    const displayName = `${file.name} (${sheet.name})`;
+    const schema = extractSchema(parsed, csvId, displayName);
+    const normalized = toCSVText(parsed);
+
+    await storeCSV(csvId, normalized, schema);
+    manifestSheets.push({ name: sheet.name, csvId, schema });
+
+    if (i === 0) {
+      primaryCsvId = csvId;
+      primarySchema = schema;
+      primaryCsv = normalized;
+    } else {
+      const safeName = sanitizeSheetName(sheet.name);
+      additionalFiles.push({ path: `/data/sheets/${safeName}.csv`, content: normalized });
+    }
+  }
+
+  if (!primarySchema) return { error: "Excel file has no sheets" };
+
+  // Store workbook manifest
+  const manifest: WorkbookManifest = {
+    sheets: manifestSheets,
+    relationships: [], // relationships not re-detected on rerun
+  };
+  storeWorkbookManifest(primaryCsvId, manifest);
+
+  // Prepare warm sandbox with all sheets
+  prepareWarmSandbox(
+    primaryCsvId,
+    primaryCsv,
+    runtime,
+    null,
+    additionalFiles.length > 0 ? additionalFiles : undefined
+  );
+
+  // Wait for sandbox to be ready
+  await ensureWarmSandboxReady(primaryCsvId, primaryCsv, runtime);
+
+  return { primaryCsvId, primarySchema, primaryCsv };
+}
+
+// ── File parsing ──────────────────────────────────────────────────────
+
+type ParseOk = { parsed: ParsedCSV; normalizedCsv: string; geojsonText?: string };
+type ParseErr = { error: string };
+
+async function parseUploadedFile(file: File): Promise<ParseOk | ParseErr> {
+  const name = file.name.toLowerCase();
+  const isCSV = name.endsWith(".csv");
+  const isExcel = name.endsWith(".xlsx");
+  const isGeoJSONExt = name.endsWith(".geojson");
+  const isJSON = name.endsWith(".json");
+
+  if (!isCSV && !isExcel && !isGeoJSONExt && !isJSON) {
+    return { error: "Only .csv, .xlsx, .geojson, and .json files are accepted" };
+  }
+
+  // GeoJSON (.geojson or .json that looks like GeoJSON)
+  if (isGeoJSONExt || isJSON) {
+    const text = await file.text();
+    let isGeoJSON = isGeoJSONExt;
+    if (isJSON) {
+      try {
+        isGeoJSON = isGeoJSONObject(JSON.parse(text));
+      } catch {
+        isGeoJSON = false;
+      }
+    }
+    if (!isGeoJSON) {
+      return { error: "JSON file is not valid GeoJSON" };
+    }
+    const gParsed = parseGeoJSON(text);
+    if (gParsed.headers.length === 0) {
+      return { error: "GeoJSON file has no properties" };
+    }
+    return { parsed: gParsed, normalizedCsv: toCSVText(gParsed), geojsonText: text };
+  }
+
+  // Excel
+  if (isExcel) {
+    const buffer = Buffer.from(await file.arrayBuffer());
+    const { sheets, workbook } = await parseExcelMeta(buffer);
+    if (sheets.length === 0) return { error: "Excel file has no sheets" };
+    // Use first sheet for rerun (multi-sheet selection isn't practical here)
+    const csvText = sheetToCSV(workbook, sheets[0].name);
+    const parsed = parseCSV(csvText);
+    if (parsed.headers.length === 0 || parsed.rowCount === 0) {
+      return { error: "Excel sheet has no data" };
+    }
+    return { parsed, normalizedCsv: toCSVText(parsed) };
+  }
+
+  // CSV
+  const text = await file.text();
+  try {
+    const parsed = parseCSV(text);
+    if (parsed.headers.length === 0 || parsed.rowCount === 0) {
+      return { error: "CSV file has no data" };
+    }
+    return { parsed, normalizedCsv: toCSVText(parsed) };
+  } catch (parseErr) {
+    return { error: parseErr instanceof Error ? parseErr.message : "Invalid CSV" };
+  }
+}
+
+// rehydrateSpec is now imported from @/lib/saved/rehydrate-spec

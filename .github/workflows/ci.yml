@@ -3,6 +3,7 @@ name: CI
 on:
   push:
   pull_request:
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -32,6 +33,9 @@ jobs:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
@@ -40,3 +44,98 @@ jobs:
       - run: python -m pip install -e ".[fast,dev]"
       - run: pytest -q
       - run: lac privacy-check
+
+  desktop-contract:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: apps/desktop
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.18.1
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: pnpm
+          cache-dependency-path: apps/desktop/pnpm-lock.yaml
+      - run: pnpm install --frozen-lockfile
+      - name: Check consolidated bridge, Agent UI and launchers
+        run: |
+          pnpm format:check
+          pnpm lint
+          pnpm type-check
+          pnpm exec vitest run \
+            src/lib/__tests__/lac-bridge-client.test.ts \
+            src/app/components/__tests__/lac-quick-workspace.test.tsx \
+            'src/app/api/lac/[...path]/__tests__/route.test.ts' \
+            src/__tests__/desktop-launcher-script.test.ts \
+            src/__tests__/offline-fonts.test.ts \
+            src/__tests__/run-next-script.test.ts
+      - name: Build consolidated web application
+        run: pnpm build
+        env:
+          ANTHROPIC_API_KEY: test-key-for-build
+      - name: Check canonical product launcher
+        working-directory: .
+        run: node scripts/run-product.mjs web --print-config
+
+  windows-tauri-shell:
+    runs-on: windows-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.18.1
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: pnpm
+          cache-dependency-path: apps/desktop/pnpm-lock.yaml
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - run: python -m pip install --upgrade pip
+      - run: python -m pip install -e ".[desktop]"
+      - run: pnpm --dir apps/desktop install --frozen-lockfile
+      - name: Check shell-free Windows launchers
+        run: |
+          node apps/desktop/scripts/run-next.mjs dev --print-command
+          node apps/desktop/scripts/run-desktop.mjs dev --print-command
+          node scripts/run-product.mjs desktop --print-config
+      - name: Compile consolidated Windows Tauri shell
+        working-directory: apps/desktop/src-tauri
+        run: cargo check --locked
+      - name: Package and smoke-test deterministic Windows backend
+        shell: pwsh
+        run: |
+          python scripts/build_lac_backend.py
+          $Listener = [System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Loopback, 0)
+          $Listener.Start()
+          $Port = ([System.Net.IPEndPoint]$Listener.LocalEndpoint).Port
+          $Listener.Stop()
+          $env:LAC_BRIDGE_PORT = "$Port"
+          $env:LAC_WORKSPACE = Join-Path $env:RUNNER_TEMP "lac-workspace"
+          $env:LAC_CONFIG_DIR = Join-Path $env:RUNNER_TEMP "lac-config"
+          $Executable = Join-Path $PWD "apps\desktop\src-tauri\lac-backend\lac-backend.exe"
+          $Process = Start-Process -FilePath $Executable -PassThru -WindowStyle Hidden
+          try {
+            $Ready = $false
+            for ($Attempt = 0; $Attempt -lt 120; $Attempt++) {
+              Start-Sleep -Milliseconds 500
+              try {
+                $Health = Invoke-RestMethod -Uri "http://127.0.0.1:$Port/health" -TimeoutSec 2
+                if ($Health.service -eq "local-analytics-copilot" -and $Health.data_bridge.status -eq "ready") {
+                  $Ready = $true
+                  break
+                }
+              } catch {}
+            }
+            if (-not $Ready) { throw "Packaged LAC backend did not become ready" }
+          } finally {
+            if (-not $Process.HasExited) { Stop-Process -Id $Process.Id -Force }
+          }
